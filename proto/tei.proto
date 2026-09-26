@@ -1,0 +1,29 @@
+// Campos y servicios usados del contrato público tei.v1 de TEI v1.9.4:
+// https://github.com/huggingface/text-embeddings-inference/blob/v1.9.4/proto/tei.proto
+syntax = "proto3";
+
+package tei.v1;
+
+service Info {
+  rpc Info (InfoRequest) returns (InfoResponse);
+}
+
+service Embed {
+  rpc Embed (EmbedRequest) returns (EmbedResponse);
+}
+
+message InfoRequest {}
+
+message InfoResponse {
+  string model_id = 4;
+}
+
+message EmbedRequest {
+  string inputs = 1;
+  bool truncate = 2;
+  optional bool normalize = 3;
+}
+
+message EmbedResponse {
+  repeated float embeddings = 1;
+}

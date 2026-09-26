@@ -7,8 +7,8 @@ services:
     volumes:
       - qdrant-data:/qdrant/storage
   tei:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
-    command: ["--model-id", "BAAI/bge-m3", "--port", "80", "--max-client-batch-size", "16"]
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9-grpc
+    command: ["--model-id", "BAAI/bge-m3", "--port", "80"]
     ports:
       - "127.0.0.1:8080:80"
     volumes:

@@ -38,7 +38,7 @@ pub async fn ingest(config: &Config, options: IngestOptions) -> Result<IngestRep
     if chunks.is_empty() {
         bail!("No hay fragmentos admitidos para indexar; se conserva el índice anterior");
     }
-    let model = TeiModel::new(config);
+    let model = TeiModel::new(config)?;
     model
         .preflight()
         .await

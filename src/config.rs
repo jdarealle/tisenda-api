@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
-pub const EMBEDDING_PREPROCESSING: &str = "bge-m3-dense-plain-v1";
+pub const EMBEDDING_PREPROCESSING: &str = "bge-m3-dense-grpc-normalized-v1";
 
 #[derive(Clone)]
 pub struct Config {

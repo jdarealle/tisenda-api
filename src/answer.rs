@@ -52,7 +52,7 @@ pub async fn answer(config: &Config, request: AnswerRequest) -> Result<Answer> {
             "La configuración de embeddings no coincide con el índice activo; ejecuta ingest para reconstruirlo"
         );
     }
-    let model = TeiModel::new(config);
+    let model = TeiModel::new(config)?;
     model
         .preflight()
         .await

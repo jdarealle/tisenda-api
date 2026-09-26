@@ -16,13 +16,18 @@ Configura `OPENAI_API_KEY` antes de usar `ask`. `SOURCE_DIR` indica la carpeta d
 
 ```bash
 podman compose up -d
+podman compose logs -f tei
 ```
 
-TEI descarga el modelo en el primer arranque. Espera unos minutos la descarga y despues a que el endpoint responda:
+TEI descarga el modelo en el primer arranque. 
+
+Espera unos minutos la descarga. Cuando TEI termine de arrancar, puedes comprobar la conexión con `grpcurl`:
 
 ```bash
-curl -fsS http://127.0.0.1:8080/health
+grpcurl -plaintext -d '{}' 127.0.0.1:8080 tei.v1.Info/Info
 ```
+
+La CLI también comprueba el modelo y la dimensión antes de ingerir o consultar.
 
 ## Uso
 
@@ -42,6 +47,6 @@ Cada ingesta crea una colección nueva y activa el alias `rag_active` al termina
 | Qdrant Dashboard | [http://127.0.0.1:6333/dashboard](http://127.0.0.1:6333/dashboard) |
 | Qdrant HTTP | `http://127.0.0.1:6333` |
 | Qdrant gRPC | `http://127.0.0.1:6334` |
-| TEI | `http://127.0.0.1:8080` |
+| TEI gRPC | `http://127.0.0.1:8080` |
 
 La configuración completa está en `.env.example`.
