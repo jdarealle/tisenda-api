@@ -5,38 +5,11 @@ use rig::embeddings::{Embedding, EmbeddingError, EmbeddingModel};
 use std::time::Duration;
 use tonic::{
     Request,
-    client::Grpc,
-    codegen::http::uri::PathAndQuery,
     transport::{Channel, Endpoint},
 };
-use tonic_prost::ProstCodec;
 
-// Estos campos conservan los números del contrato público en proto/tei.proto.
 mod proto {
-    #[derive(Clone, PartialEq, prost::Message)]
-    pub struct InfoRequest {}
-
-    #[derive(Clone, PartialEq, prost::Message)]
-    pub struct InfoResponse {
-        #[prost(string, tag = "4")]
-        pub model_id: String,
-    }
-
-    #[derive(Clone, PartialEq, prost::Message)]
-    pub struct EmbedRequest {
-        #[prost(string, tag = "1")]
-        pub inputs: String,
-        #[prost(bool, tag = "2")]
-        pub truncate: bool,
-        #[prost(bool, optional, tag = "3")]
-        pub normalize: Option<bool>,
-    }
-
-    #[derive(Clone, PartialEq, prost::Message)]
-    pub struct EmbedResponse {
-        #[prost(float, repeated, tag = "1")]
-        pub embeddings: Vec<f32>,
-    }
+    tonic::include_proto!("tei.v1");
 }
 
 #[derive(Clone)]
@@ -61,14 +34,8 @@ impl TeiModel {
     }
 
     async fn info(&self) -> Result<proto::InfoResponse> {
-        let mut grpc = Grpc::new(self.channel.clone());
-        grpc.ready().await.context("TEI gRPC no está listo")?;
-        let response: tonic::Response<proto::InfoResponse> = grpc
-            .unary(
-                Request::new(proto::InfoRequest {}),
-                PathAndQuery::from_static("/tei.v1.Info/Info"),
-                ProstCodec::default(),
-            )
+        let response = proto::info_client::InfoClient::new(self.channel.clone())
+            .info(proto::InfoRequest {})
             .await
             .context("TEI gRPC rechazó Info")?;
         Ok(response.into_inner())
@@ -111,7 +78,7 @@ impl EmbeddingModel for TeiModel {
         let requests = texts.into_iter().map(|text| {
             let channel = self.channel.clone();
             async move {
-                let mut grpc = Grpc::new(channel);
+                let mut client = proto::embed_client::EmbedClient::new(channel);
                 let mut request = Request::new(proto::EmbedRequest {
                     inputs: text.clone(),
                     truncate: false,
@@ -119,15 +86,8 @@ impl EmbeddingModel for TeiModel {
                 });
                 request.set_timeout(Duration::from_secs(120));
                 let response = tokio::time::timeout(Duration::from_secs(120), async {
-                    grpc.ready().await.map_err(|error| {
-                        EmbeddingError::ResponseError(format!("TEI gRPC no está listo: {error}"))
-                    })?;
-                    let response: tonic::Response<proto::EmbedResponse> = grpc
-                        .unary(
-                            request,
-                            PathAndQuery::from_static("/tei.v1.Embed/Embed"),
-                            ProstCodec::default(),
-                        )
+                    let response = client
+                        .embed(request)
                         .await
                         .map_err(|error| {
                             EmbeddingError::ResponseError(format!("TEI gRPC: {error}"))

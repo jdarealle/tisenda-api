@@ -2,6 +2,8 @@
 
 CLI en Rust para indexar archivos UTF-8 `.txt` y `.md` de una carpeta local, buscar fragmentos en Qdrant y responder preguntas con OpenAI. TEI genera embeddings densos con `BAAI/bge-m3`.
 
+La compilación requiere `protoc` en el `PATH`. Cargo ejecuta `build.rs` cuando necesita reconstruir los tipos y clientes gRPC de TEI desde `proto/tei.proto` con `tonic-prost-build`. 
+
 ## Configuración
 
 Si aún no tienes `.env`, créalo desde la plantilla:
