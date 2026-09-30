@@ -2,7 +2,10 @@ use crate::{
     Config, chunking::chunk_document, documents::read_documents, embeddings::TeiModel, index,
 };
 use anyhow::{Context, Result, bail};
-use rig::{embeddings::EmbeddingsBuilder, vector_store::InsertDocuments};
+use rig::{
+    embeddings::{EmbeddingModel, EmbeddingsBuilder},
+    vector_store::InsertDocuments,
+};
 use serde::Serialize;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -52,7 +55,7 @@ pub async fn ingest(config: &Config, options: IngestOptions) -> Result<IngestRep
     );
     index::create_collection(&client, config, &collection).await?;
     let store = index::store(client.clone(), model.clone(), &collection);
-    for batch in chunks.chunks(16) {
+    for batch in chunks.chunks(TeiModel::MAX_DOCUMENTS) {
         let embedded = EmbeddingsBuilder::new(model.clone())
             .documents(batch.to_vec())?
             .build()

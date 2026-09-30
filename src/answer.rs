@@ -54,7 +54,7 @@ pub async fn answer(config: &Config, request: AnswerRequest) -> Result<Answer> {
     }
     let model = TeiModel::new(config)?;
     model
-        .preflight()
+        .check_model()
         .await
         .context("TEI no está listo para la consulta")?;
     let store = index::store(client, model, &config.qdrant_alias);

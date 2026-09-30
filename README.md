@@ -29,7 +29,9 @@ Espera unos minutos la descarga. Cuando TEI termine de arrancar, puedes comproba
 grpcurl -plaintext -d '{}' 127.0.0.1:8080 tei.v1.Info/Info
 ```
 
-La CLI también comprueba el modelo y la dimensión antes de ingerir o consultar.
+La CLI comprueba el modelo y las dimensiones antes de crear una colección en la
+ingesta. En las consultas verifica el modelo mediante `Info` y valida las
+dimensiones con el embedding de la pregunta, sin una inferencia de prueba extra.
 
 ## Uso
 
