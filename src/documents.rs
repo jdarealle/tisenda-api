@@ -1,7 +1,10 @@
 use crate::ingest::SkippedFile;
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 use walkdir::WalkDir;
 
 pub(crate) struct Document {
@@ -10,10 +13,26 @@ pub(crate) struct Document {
     pub content_hash: String,
 }
 
-pub(crate) fn read_documents(
-    root: &Path,
-    max_bytes: u64,
-) -> Result<(Vec<Document>, Vec<SkippedFile>, usize)> {
+pub(crate) struct DocumentInventory {
+    pub documents: Vec<Document>,
+    pub skipped: Vec<SkippedFile>,
+    pub files_seen: usize,
+    pub present_paths: BTreeSet<String>,
+    pub protected_paths: BTreeSet<String>,
+}
+
+impl DocumentInventory {
+    pub fn contains(&self, relative_path: &str) -> bool {
+        self.present_paths.contains(relative_path)
+            || self.protected_paths.iter().any(|path| {
+                relative_path
+                    .strip_prefix(path)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+            })
+    }
+}
+
+pub(crate) fn read_documents(root: &Path, max_bytes: u64) -> Result<DocumentInventory> {
     if !root.is_dir() {
         bail!(
             "La carpeta fuente no existe o no es directorio: {}",
@@ -30,16 +49,28 @@ pub(crate) fn read_documents(
     let mut documents = Vec::new();
     let mut skipped = Vec::new();
     let mut seen = 0;
+    let mut present_paths = BTreeSet::new();
+    let mut protected_paths = BTreeSet::new();
     for path in paths {
         let relative = path
             .strip_prefix(root)
             .context("Ruta fuera de la carpeta fuente")?
-            .to_string_lossy()
-            .replace('\\', "/");
+            .components()
+            .map(|component| {
+                component
+                    .as_os_str()
+                    .to_str()
+                    .context("Una ruta no es UTF-8")
+            })
+            .collect::<Result<Vec<_>>>()?
+            .join("/");
         if relative.is_empty() {
             continue;
         }
+        present_paths.insert(relative.clone());
         if path.is_symlink() {
+            // No recorrer un enlace no significa que sus documentos desaparecieron.
+            protected_paths.insert(relative.clone());
             seen += 1;
             skipped.push(SkippedFile {
                 path: relative,
@@ -90,5 +121,11 @@ pub(crate) fn read_documents(
             content_hash,
         });
     }
-    Ok((documents, skipped, seen))
+    Ok(DocumentInventory {
+        documents,
+        skipped,
+        files_seen: seen,
+        present_paths,
+        protected_paths,
+    })
 }

@@ -12,10 +12,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Reconstruye el índice desde una carpeta local.
+    /// Sincroniza documentos nuevos o modificados con el índice activo.
     Ingest {
         #[arg(long)]
         source: Option<PathBuf>,
+        /// Elimina del índice los documentos ausentes de la carpeta fuente.
+        #[arg(long)]
+        prune: bool,
     },
     /// Responde una pregunta usando el índice activo.
     Ask {
@@ -34,17 +37,44 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let config = Config::from_env()?;
     match cli.command {
-        Command::Ingest { source } => {
+        Command::Ingest { source, prune } => {
             let source = source
                 .or_else(|| config.source_dir.clone())
                 .context("Define SOURCE_DIR en .env o usa ingest --source <ruta>")?;
-            let report = rag::ingest(&config, IngestOptions { source_dir: source }).await?;
+            let report = rag::ingest(
+                &config,
+                IngestOptions {
+                    source_dir: source,
+                    prune,
+                },
+            )
+            .await?;
             println!(
-                "Archivos vistos: {}; admitidos: {}; omitidos: {}; fragmentos: {}",
+                "Archivos vistos: {}; admitidos: {}; omitidos: {}; fragmentos en índice: {}",
                 report.files_seen, report.files_indexed, report.files_skipped, report.chunks
+            );
+            println!(
+                "Nuevos: {}; actualizados: {}; sin cambios: {}; eliminados: {}; fragmentos escritos: {}",
+                report.files_new,
+                report.files_updated,
+                report.files_unchanged,
+                report.files_removed,
+                report.chunks_written
             );
             for skipped in &report.skipped {
                 println!("Omitido: {} ({})", skipped.path, skipped.reason);
+            }
+            for path in &report.preserved {
+                println!(
+                    "Conservado en el índice: {:?} (presente, pero no procesable)",
+                    path
+                );
+            }
+            for path in &report.pending_removal {
+                println!(
+                    "Ausente, conservado en el índice: {:?} (usa ingest --prune para eliminarlo)",
+                    path
+                );
             }
             println!("Índice activo: {}", report.active_collection);
         }

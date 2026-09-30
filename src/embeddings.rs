@@ -2,6 +2,7 @@ use crate::Config;
 use anyhow::{Context, Result, bail};
 use futures_util::future::try_join_all;
 use rig::embeddings::{Embedding, EmbeddingError, EmbeddingModel};
+use serde::{Deserialize, Serialize};
 use std::{future::Future, time::Duration};
 use tonic::{
     Request, Response, Status,
@@ -49,6 +50,13 @@ pub(crate) struct TeiModel {
     channel: Channel,
     model: String,
     dimension: usize,
+    revision: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct ModelIdentity {
+    pub revision: String,
+    pub dtype: String,
 }
 
 impl TeiModel {
@@ -61,6 +69,7 @@ impl TeiModel {
             channel,
             model: config.embedding_model.clone(),
             dimension: config.embedding_dimension,
+            revision: config.embedding_revision.clone(),
         })
     }
 
@@ -75,18 +84,30 @@ impl TeiModel {
         .await
     }
 
-    pub async fn check_model(&self) -> Result<()> {
+    pub async fn check_model(&self) -> Result<ModelIdentity> {
         let info = self.info().await?;
         if info.model_id != self.model {
             bail!("El modelo cargado por TEI no coincide con EMBEDDING_MODEL");
         }
-        Ok(())
+        let reported_revision = info.model_sha.filter(|revision| !revision.is_empty());
+        if let (Some(expected), Some(actual)) = (&self.revision, &reported_revision)
+            && expected != actual
+        {
+            bail!("La revisión cargada por TEI no coincide con EMBEDDING_REVISION");
+        }
+        let revision = reported_revision.or_else(|| self.revision.clone()).context(
+            "TEI no informa model_sha; fija la revisión del modelo y define EMBEDDING_REVISION para identificarla",
+        )?;
+        Ok(ModelIdentity {
+            revision,
+            dtype: info.model_dtype,
+        })
     }
 
-    pub async fn preflight(&self) -> Result<()> {
-        self.check_model().await?;
+    pub async fn preflight(&self) -> Result<ModelIdentity> {
+        let identity = self.check_model().await?;
         self.embed_text("comprobación de dimensiones").await?;
-        Ok(())
+        Ok(identity)
     }
 }
 

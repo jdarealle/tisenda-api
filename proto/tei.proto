@@ -16,6 +16,8 @@ message InfoRequest {}
 
 message InfoResponse {
   string model_id = 4;
+  optional string model_sha = 5;
+  string model_dtype = 6;
 }
 
 message EmbedRequest {

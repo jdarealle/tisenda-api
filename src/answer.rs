@@ -47,16 +47,15 @@ pub async fn answer(config: &Config, request: AnswerRequest) -> Result<Answer> {
     let active = index::active_collection(&client, &config.qdrant_alias)
         .await?
         .context("No hay índice activo. Ejecuta primero `cargo run -p rag -- ingest`")?;
-    if !active.starts_with(&format!("rag_{}_", config.embedding_version())) {
-        bail!(
-            "La configuración de embeddings no coincide con el índice activo; ejecuta ingest para reconstruirlo"
-        );
-    }
+    let binding = index::collection_binding(&client, config, &active).await?;
     let model = TeiModel::new(config)?;
-    model
+    let identity = model
         .check_model()
         .await
         .context("TEI no está listo para la consulta")?;
+    if let Some(binding) = binding {
+        binding.validate_model(config, &identity)?;
+    }
     let store = index::store(client, model, &config.qdrant_alias);
     let search = VectorSearchRequest::<QdrantFilter>::builder()
         .query(question)

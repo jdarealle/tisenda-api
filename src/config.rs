@@ -12,6 +12,7 @@ pub struct Config {
     pub source_dir: Option<PathBuf>,
     pub tei_url: String,
     pub embedding_model: String,
+    pub embedding_revision: Option<String>,
     pub embedding_dimension: usize,
     pub openai_model: String,
     pub openai_api_key: Option<String>,
@@ -44,6 +45,9 @@ impl Config {
                 .map(PathBuf::from),
             tei_url: value("TEI_URL", "http://127.0.0.1:8080"),
             embedding_model: value("EMBEDDING_MODEL", "BAAI/bge-m3"),
+            embedding_revision: std::env::var("EMBEDDING_REVISION")
+                .ok()
+                .filter(|revision| !revision.trim().is_empty()),
             embedding_dimension: number("EMBEDDING_DIMENSION", "1024")?,
             openai_model: value("OPENAI_MODEL", "gpt-5-mini"),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
