@@ -2,7 +2,7 @@ use super::{
     DocumentIngestResult, IngestDocument, IngestReport, document_processor, index_state, plan,
     write,
 };
-use crate::{Config, documents::Document, embeddings::TeiModel, index};
+use crate::{Config, documents::Document, qdrant, tei::TeiModel};
 use anyhow::{Context, Result, bail};
 
 /// Upsert supplied documents independently, without treating absent documents as deleted.
@@ -39,16 +39,16 @@ async fn ingest_document(config: &Config, document: Document) -> Result<IngestRe
         .check_model()
         .await
         .context("TEI no está listo para la ingesta")?;
-    let client = index::client(config)?;
-    let active = index::active_collection(&client, &config.qdrant_alias).await?;
+    let client = qdrant::client(config)?;
+    let active = qdrant::active_collection(&client, &config.qdrant_alias).await?;
     let collection = active
         .clone()
         .unwrap_or_else(|| index_state::stable_collection(config));
     let exists = client.collection_exists(collection.as_str()).await?;
     let binding = if exists {
-        index::collection_binding(&client, config, &collection).await?
+        qdrant::collection_binding(&client, config, &collection).await?
     } else {
-        index::CollectionBinding::new(config, identity.clone())
+        qdrant::CollectionBinding::new(config, identity.clone())
     };
     binding.validate_model(config, &identity)?;
     binding.validate_source(config)?;
@@ -79,7 +79,7 @@ async fn ingest_document(config: &Config, document: Document) -> Result<IngestRe
     }
     write::ensure_alias(&client, config, active.as_deref()).await?;
     if !exists {
-        index::create_collection(&client, config, &collection, &binding).await?;
+        qdrant::create_collection(&client, config, &collection, &binding).await?;
     }
     let chunks_written =
         write::documents(&client, &model, &collection, &pipeline, &plan.changed).await?;
@@ -113,14 +113,14 @@ async fn ingest_document(config: &Config, document: Document) -> Result<IngestRe
         if document.obsolete_ids.is_empty() {
             continue;
         }
-        index::delete_points(&client, &collection, &document.obsolete_ids).await?;
+        qdrant::delete_points(&client, &collection, &document.obsolete_ids).await?;
     }
-    index::verify_count(&client, &collection, expected)
+    qdrant::verify_count(&client, &collection, expected)
         .await
         .context("El índice no tiene el conteo esperado")?;
     if active.is_none() {
         write::ensure_alias(&client, config, None).await?;
-        index::publish_alias(&client, &config.qdrant_alias, &collection).await?;
+        qdrant::publish_alias(&client, &config.qdrant_alias, &collection).await?;
     }
     write::ensure_alias(&client, config, Some(&collection)).await?;
     Ok(IngestReport {

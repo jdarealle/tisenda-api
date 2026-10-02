@@ -1,7 +1,7 @@
 use crate::{
     AnswerRequest, Config, answer,
     docling::{self, ArchiveLimits, Callback, Progress},
-    index,
+    qdrant,
 };
 use anyhow::{Context, Result, bail};
 use axum::{
@@ -127,9 +127,9 @@ async fn query(
             "Pregunta vacía o top_k fuera de 1..50",
         ));
     }
-    let client = index::client(&state.config)
+    let client = qdrant::client(&state.config)
         .map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "Configuración inválida"))?;
-    let active = index::active_collection(&client, &state.config.qdrant_alias)
+    let active = qdrant::active_collection(&client, &state.config.qdrant_alias)
         .await
         .map_err(|_| ApiError(StatusCode::BAD_GATEWAY, "No se pudo consultar Qdrant"))?;
     if active.is_none() {

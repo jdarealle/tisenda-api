@@ -2,10 +2,10 @@ mod answer;
 mod config;
 mod docling;
 mod documents;
-mod embeddings;
-mod index;
 mod ingest;
+mod qdrant;
 mod server;
+mod tei;
 
 pub use answer::{Answer, AnswerRequest, Source, answer};
 pub use config::Config;

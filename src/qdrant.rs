@@ -1,6 +1,6 @@
 use crate::{
     Config,
-    embeddings::{ModelIdentity, TeiModel},
+    tei::{ModelIdentity, TeiModel},
 };
 use anyhow::{Context, Result, bail};
 use qdrant_client::{

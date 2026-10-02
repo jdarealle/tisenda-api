@@ -1,4 +1,4 @@
-use crate::{Config, documents::Chunk, embeddings::TeiModel, index};
+use crate::{Config, documents::Chunk, qdrant, tei::TeiModel};
 use anyhow::{Context, Result, bail};
 use rig::{
     client::CompletionClient,
@@ -46,11 +46,11 @@ pub async fn answer(config: &Config, request: AnswerRequest) -> Result<Answer> {
     if top_k == 0 || top_k > 50 {
         bail!("top_k debe estar entre 1 y 50");
     }
-    let client = index::client(config)?;
-    let active = index::active_collection(&client, &config.qdrant_alias)
+    let client = qdrant::client(config)?;
+    let active = qdrant::active_collection(&client, &config.qdrant_alias)
         .await?
         .context("No hay índice activo. Envía documentos a Docling primero")?;
-    let binding = index::collection_binding(&client, config, &active).await?;
+    let binding = qdrant::collection_binding(&client, config, &active).await?;
     let model = TeiModel::new(config)?;
     let identity = model
         .check_model()
@@ -58,7 +58,7 @@ pub async fn answer(config: &Config, request: AnswerRequest) -> Result<Answer> {
         .context("TEI no está listo para la consulta")?;
     binding.validate_model(config, &identity)?;
     binding.validate_source(config)?;
-    let store = index::store(client, model, &config.qdrant_alias);
+    let store = qdrant::store(client, model, &config.qdrant_alias);
     let search = VectorSearchRequest::<QdrantFilter>::builder()
         .query(question)
         .samples((top_k * 2).min(50) as u64)

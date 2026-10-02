@@ -1,5 +1,5 @@
 use super::{index_state, plan};
-use crate::{Config, embeddings::TeiModel, index};
+use crate::{Config, qdrant, tei::TeiModel};
 use anyhow::{Context, Result, bail};
 use qdrant_client::{Payload, qdrant::PointStruct};
 use rig::embeddings::{EmbeddingModel, EmbeddingsBuilder};
@@ -48,7 +48,7 @@ pub(super) async fn documents(
                     Payload::try_from(payload)?,
                 ));
             }
-            index::upsert_points(client, collection, points)
+            qdrant::upsert_points(client, collection, points)
                 .await
                 .context("Falló la escritura en Qdrant")?;
             chunks_written += batch.len();
@@ -62,7 +62,7 @@ pub(super) async fn ensure_alias(
     config: &Config,
     expected: Option<&str>,
 ) -> Result<()> {
-    if index::active_collection(client, &config.qdrant_alias)
+    if qdrant::active_collection(client, &config.qdrant_alias)
         .await?
         .as_deref()
         != expected

@@ -1,6 +1,4 @@
-use crate::{
-    Config, config::EMBEDDING_PREPROCESSING, documents::Document, embeddings::ModelIdentity,
-};
+use crate::{Config, config::EMBEDDING_PREPROCESSING, documents::Document, tei::ModelIdentity};
 use anyhow::{Context, Result, bail};
 use qdrant_client::{
     Payload, Qdrant,
