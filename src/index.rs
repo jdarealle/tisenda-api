@@ -8,7 +8,7 @@ use qdrant_client::{
     qdrant::{
         CountPointsBuilder, CreateAliasBuilder, CreateCollectionBuilder, DeletePointsBuilder,
         Distance, PointId, PointStruct, PointsIdsList, PointsOperationResponse, QueryPointsBuilder,
-        UpdateCollectionBuilder, UpdateStatus, UpsertPointsBuilder, VectorParamsBuilder,
+        UpdateStatus, UpsertPointsBuilder, VectorParamsBuilder,
         vectors_config::Config as VectorConfig,
     },
 };
@@ -18,35 +18,40 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 const METADATA_KEY: &str = "rag_ingest";
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
+const CORPUS_SOURCE: &str = "docling-manual";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct CollectionBinding {
     schema_version: u32,
-    pub corpus_id: String,
-    pub source_root: String,
-    pub alias: String,
+    corpus_id: String,
+    source: String,
+    alias: String,
     embedding_version: String,
     model_identity: ModelIdentity,
 }
 
 impl CollectionBinding {
-    pub fn new(config: &Config, source_root: String, model_identity: ModelIdentity) -> Self {
+    pub(crate) fn new(config: &Config, model_identity: ModelIdentity) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
             corpus_id: Uuid::new_v4().to_string(),
-            source_root,
+            source: CORPUS_SOURCE.into(),
             alias: config.qdrant_alias.clone(),
             embedding_version: config.embedding_version(),
             model_identity,
         }
     }
 
-    pub fn validate_model(&self, config: &Config, identity: &ModelIdentity) -> Result<()> {
+    pub(crate) fn corpus_id(&self) -> Result<Uuid> {
+        Uuid::parse_str(&self.corpus_id).context("Identidad del corpus inválida")
+    }
+
+    pub(crate) fn validate_model(&self, config: &Config, identity: &ModelIdentity) -> Result<()> {
         if self.schema_version != SCHEMA_VERSION {
             bail!("Versión de metadatos del índice no compatible");
         }
-        Uuid::parse_str(&self.corpus_id).context("Identidad del corpus inválida")?;
+        self.corpus_id()?;
         if self.embedding_version != config.embedding_version() || &self.model_identity != identity
         {
             bail!(
@@ -56,13 +61,9 @@ impl CollectionBinding {
         Ok(())
     }
 
-    pub fn validate_source(&self, config: &Config, source_root: &str) -> Result<()> {
-        if self.source_root != source_root || self.alias != config.qdrant_alias {
-            bail!(
-                "La colección pertenece al alias {} y a la carpeta {}; usa su carpeta original o un alias distinto para otro corpus",
-                self.alias,
-                self.source_root
-            );
+    pub(crate) fn validate_source(&self, config: &Config) -> Result<()> {
+        if self.source != CORPUS_SOURCE || self.alias != config.qdrant_alias {
+            bail!("La colección no corresponde al corpus Docling y al alias configurado");
         }
         Ok(())
     }
@@ -134,7 +135,7 @@ pub(crate) async fn collection_binding(
     client: &Qdrant,
     config: &Config,
     collection: &str,
-) -> Result<Option<CollectionBinding>> {
+) -> Result<CollectionBinding> {
     if !collection.starts_with(&format!("rag_{}_", config.embedding_version())) {
         bail!(
             "La colección no corresponde a la configuración de embeddings; se requiere una reconstrucción explícita"
@@ -161,28 +162,11 @@ pub(crate) async fn collection_binding(
             "La colección debe usar un vector denso sin nombre, dimensión compatible y distancia coseno"
         ),
     }
-    collection_config
+    let metadata = collection_config
         .metadata
         .get(METADATA_KEY)
-        .map(|value| {
-            serde_json::from_value(value.clone().into()).context("Metadatos de ingesta inválidos")
-        })
-        .transpose()
-}
-
-pub(crate) async fn bind_collection(
-    client: &Qdrant,
-    collection: &str,
-    binding: &CollectionBinding,
-) -> Result<()> {
-    let response = client
-        .update_collection(UpdateCollectionBuilder::new(collection).metadata(binding.metadata()?))
-        .await
-        .context("No se pudo vincular la colección a la carpeta fuente")?;
-    if !response.result {
-        bail!("Qdrant no confirmó los metadatos de la colección");
-    }
-    Ok(())
+        .context("La colección no tiene metadatos de este RAG")?;
+    serde_json::from_value(metadata.clone().into()).context("Metadatos de ingesta inválidos")
 }
 
 fn confirm_update(response: PointsOperationResponse) -> Result<()> {

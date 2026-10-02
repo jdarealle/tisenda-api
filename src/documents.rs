@@ -1,131 +1,54 @@
-use crate::ingest::SkippedFile;
-use anyhow::{Context, Result, bail};
-use sha2::{Digest, Sha256};
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-};
-use walkdir::WalkDir;
+use rig::Embed;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// Native Docling JSONL record. `text` includes the structural context for embeddings.
+#[derive(Clone, Debug, Deserialize, Serialize, Embed)]
+pub struct DoclingChunk {
+    pub filename: String,
+    pub chunk_index: usize,
+    #[embed]
+    pub text: String,
+    pub raw_text: Option<String>,
+    pub num_tokens: Option<usize>,
+    pub headings: Option<Vec<String>>,
+    pub captions: Option<Vec<String>>,
+    pub doc_items: Vec<String>,
+    pub page_numbers: Option<Vec<usize>>,
+    pub metadata: Option<BTreeMap<String, serde_json::Value>>,
+}
 
 pub(crate) struct Document {
-    pub relative_path: String,
-    pub text: String,
-    pub content_hash: String,
+    pub(crate) filename: String,
+    pub(crate) chunks: Vec<DoclingChunk>,
+    pub(crate) content_hash: String,
 }
 
-pub(crate) struct DocumentInventory {
-    pub documents: Vec<Document>,
-    pub skipped: Vec<SkippedFile>,
-    pub files_seen: usize,
-    pub present_paths: BTreeSet<String>,
-    pub protected_paths: BTreeSet<String>,
+#[derive(Clone, Debug, Serialize, Deserialize, Embed)]
+pub(crate) struct Chunk {
+    #[embed]
+    #[serde(flatten)]
+    pub(crate) native: DoclingChunk,
+    pub(crate) content_hash: String,
+    pub(crate) embedding_version: String,
+    pub(crate) embedding_model: String,
+    pub(crate) embedding_dimension: usize,
+    pub(crate) embedding_preprocessing: String,
 }
 
-impl DocumentInventory {
-    pub fn contains(&self, relative_path: &str) -> bool {
-        self.present_paths.contains(relative_path)
-            || self.protected_paths.iter().any(|path| {
-                relative_path
-                    .strip_prefix(path)
-                    .is_some_and(|suffix| suffix.starts_with('/'))
-            })
+// Qdrant's gRPC integer type is i64. Keep larger native integers exact as strings
+// instead of letting the client convert them to lossy floating-point numbers.
+pub(crate) fn prepare_qdrant_metadata(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Number(number)
+            if number.as_u64().is_some_and(|n| n > i64::MAX as u64) =>
+        {
+            *value = number.to_string().into();
+        }
+        serde_json::Value::Object(fields) => {
+            fields.values_mut().for_each(prepare_qdrant_metadata);
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(prepare_qdrant_metadata),
+        _ => {}
     }
-}
-
-pub(crate) fn read_documents(root: &Path, max_bytes: u64) -> Result<DocumentInventory> {
-    if !root.is_dir() {
-        bail!(
-            "La carpeta fuente no existe o no es directorio: {}",
-            root.display()
-        );
-    }
-    let mut paths: Vec<PathBuf> = WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .map(|entry| entry.map(|e| e.path().to_path_buf()))
-        .collect::<Result<_, _>>()
-        .context("No se pudo recorrer la carpeta fuente")?;
-    paths.sort();
-    let mut documents = Vec::new();
-    let mut skipped = Vec::new();
-    let mut seen = 0;
-    let mut present_paths = BTreeSet::new();
-    let mut protected_paths = BTreeSet::new();
-    for path in paths {
-        let relative = path
-            .strip_prefix(root)
-            .context("Ruta fuera de la carpeta fuente")?
-            .components()
-            .map(|component| {
-                component
-                    .as_os_str()
-                    .to_str()
-                    .context("Una ruta no es UTF-8")
-            })
-            .collect::<Result<Vec<_>>>()?
-            .join("/");
-        if relative.is_empty() {
-            continue;
-        }
-        present_paths.insert(relative.clone());
-        if path.is_symlink() {
-            // No recorrer un enlace no significa que sus documentos desaparecieron.
-            protected_paths.insert(relative.clone());
-            seen += 1;
-            skipped.push(SkippedFile {
-                path: relative,
-                reason: "enlace simbólico".into(),
-            });
-            continue;
-        }
-        if !path.is_file() {
-            continue;
-        }
-        seen += 1;
-        if !matches!(
-            path.extension()
-                .and_then(|e| e.to_str())
-                .map(str::to_ascii_lowercase)
-                .as_deref(),
-            Some("txt" | "md")
-        ) {
-            skipped.push(SkippedFile {
-                path: relative,
-                reason: "formato no admitido".into(),
-            });
-            continue;
-        }
-        let metadata = std::fs::metadata(&path)
-            .with_context(|| format!("No se pudo leer {}", path.display()))?;
-        if metadata.len() > max_bytes {
-            bail!("Archivo demasiado grande: {}", relative);
-        }
-        let bytes =
-            std::fs::read(&path).with_context(|| format!("No se pudo leer {}", relative))?;
-        if bytes.len() as u64 > max_bytes {
-            bail!("Archivo demasiado grande: {}", relative);
-        }
-        let text = String::from_utf8(bytes)
-            .with_context(|| format!("El archivo no es UTF-8: {}", relative))?;
-        if text.trim().is_empty() {
-            skipped.push(SkippedFile {
-                path: relative,
-                reason: "archivo vacío".into(),
-            });
-            continue;
-        }
-        let content_hash = format!("{:x}", Sha256::digest(text.as_bytes()));
-        documents.push(Document {
-            relative_path: relative,
-            text,
-            content_hash,
-        });
-    }
-    Ok(DocumentInventory {
-        documents,
-        skipped,
-        files_seen: seen,
-        present_paths,
-        protected_paths,
-    })
 }

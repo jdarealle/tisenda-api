@@ -55,12 +55,12 @@ pub(crate) struct TeiModel {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct ModelIdentity {
-    pub revision: String,
-    pub dtype: String,
+    revision: String,
+    dtype: String,
 }
 
 impl TeiModel {
-    pub fn new(config: &Config) -> Result<Self> {
+    pub(crate) fn new(config: &Config) -> Result<Self> {
         let channel = Endpoint::from_shared(config.tei_url.trim_end_matches('/').to_string())
             .context("TEI_URL debe ser una URL gRPC válida")?
             .connect_timeout(CONNECT_TIMEOUT)
@@ -84,7 +84,7 @@ impl TeiModel {
         .await
     }
 
-    pub async fn check_model(&self) -> Result<ModelIdentity> {
+    pub(crate) async fn check_model(&self) -> Result<ModelIdentity> {
         let info = self.info().await?;
         if info.model_id != self.model {
             bail!("El modelo cargado por TEI no coincide con EMBEDDING_MODEL");
@@ -104,7 +104,7 @@ impl TeiModel {
         })
     }
 
-    pub async fn preflight(&self) -> Result<ModelIdentity> {
+    pub(crate) async fn preflight(&self) -> Result<ModelIdentity> {
         let identity = self.check_model().await?;
         self.embed_text("comprobación de dimensiones").await?;
         Ok(identity)

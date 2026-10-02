@@ -1,4 +1,4 @@
-use crate::{Chunk, Config, embeddings::TeiModel, index};
+use crate::{Config, documents::Chunk, embeddings::TeiModel, index};
 use anyhow::{Context, Result, bail};
 use rig::{
     client::CompletionClient,
@@ -7,14 +7,14 @@ use rig::{
     vector_store::{VectorStoreIndex, request::VectorSearchRequest},
 };
 use rig_qdrant::QdrantFilter;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 const NO_EVIDENCE: &str =
     "No hay información suficiente en los documentos indexados para responder esa pregunta.";
-const MAX_CONTEXT_CHARS: usize = 12_000;
+const MAX_CONTEXT_BYTES: usize = 12_000;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct AnswerRequest {
     pub question: String,
     pub top_k: Option<usize>,
@@ -22,8 +22,11 @@ pub struct AnswerRequest {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Source {
-    pub relative_path: String,
-    pub section: Option<String>,
+    pub filename: String,
+    pub headings: Option<Vec<String>>,
+    pub captions: Option<Vec<String>>,
+    pub page_numbers: Option<Vec<usize>>,
+    pub doc_items: Vec<String>,
     pub chunk_index: usize,
     pub score: f64,
 }
@@ -46,16 +49,15 @@ pub async fn answer(config: &Config, request: AnswerRequest) -> Result<Answer> {
     let client = index::client(config)?;
     let active = index::active_collection(&client, &config.qdrant_alias)
         .await?
-        .context("No hay índice activo. Ejecuta primero `cargo run -p rag -- ingest`")?;
+        .context("No hay índice activo. Envía documentos a Docling primero")?;
     let binding = index::collection_binding(&client, config, &active).await?;
     let model = TeiModel::new(config)?;
     let identity = model
         .check_model()
         .await
         .context("TEI no está listo para la consulta")?;
-    if let Some(binding) = binding {
-        binding.validate_model(config, &identity)?;
-    }
+    binding.validate_model(config, &identity)?;
+    binding.validate_source(config)?;
     let store = index::store(client, model, &config.qdrant_alias);
     let search = VectorSearchRequest::<QdrantFilter>::builder()
         .query(question)
@@ -69,29 +71,43 @@ pub async fn answer(config: &Config, request: AnswerRequest) -> Result<Answer> {
     let mut context = String::new();
     let mut per_file: HashMap<String, usize> = HashMap::new();
     for (score, _, chunk) in results {
+        let chunk = chunk.native;
         if score < 0.25 || sources.len() >= top_k {
             break;
         }
-        let count = per_file.entry(chunk.relative_path.clone()).or_default();
+        let count = per_file.entry(chunk.filename.clone()).or_default();
         if *count >= 3 {
             continue;
         }
+        let headings = chunk.headings.as_deref().unwrap_or_default().join(" > ");
+        let pages = chunk
+            .page_numbers
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
         let line = format!(
-            "[{}] {} | sección: {} | fragmento {}\n{}\n\n",
+            "[{}] {} | encabezados: {} | páginas: {} | fragmento {}\n{}\n\n",
             sources.len() + 1,
-            chunk.relative_path,
-            chunk.section.as_deref().unwrap_or("sin sección"),
+            chunk.filename,
+            headings,
+            pages,
             chunk.chunk_index,
             chunk.text
         );
-        if context.len() + line.len() > MAX_CONTEXT_CHARS {
+        if context.len() + line.len() > MAX_CONTEXT_BYTES {
             continue;
         }
         context.push_str(&line);
         *count += 1;
         sources.push(Source {
-            relative_path: chunk.relative_path,
-            section: chunk.section,
+            filename: chunk.filename,
+            headings: chunk.headings,
+            captions: chunk.captions,
+            page_numbers: chunk.page_numbers,
+            doc_items: chunk.doc_items,
             chunk_index: chunk.chunk_index,
             score,
         });
@@ -107,7 +123,7 @@ pub async fn answer(config: &Config, request: AnswerRequest) -> Result<Answer> {
         .as_deref()
         .context("Falta OPENAI_API_KEY para generar la respuesta")?;
     if key.trim().is_empty() || key == "CHANGE_ME" {
-        bail!("Configura OPENAI_API_KEY antes de usar ask");
+        bail!("Configura OPENAI_API_KEY para generar respuestas");
     }
     let openai = openai::Client::new(key)?;
     let model = openai.completion_model(&config.openai_model);

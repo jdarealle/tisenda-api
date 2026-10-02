@@ -1,13 +1,13 @@
 services:
   qdrant:
-    image: docker.io/qdrant/qdrant:v1.19.0
+    image: docker.io/qdrant/qdrant:v1.19.1
     ports:
       - "127.0.0.1:6333:6333"
       - "127.0.0.1:6334:6334"
     volumes:
       - qdrant-data:/qdrant/storage
   tei:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9-grpc
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4-grpc
     environment:
       MODEL_ID: "${EMBEDDING_MODEL:?Define EMBEDDING_MODEL}"
       REVISION: "${EMBEDDING_REVISION:?Define EMBEDDING_REVISION}"
@@ -16,6 +16,19 @@ services:
       - "127.0.0.1:8080:80"
     volumes:
       - tei-bge-m3-cache:/data
+  docling:
+    image: quay.io/docling-project/docling-serve-cpu:v1.36.0
+    ports:
+      - "127.0.0.1:5001:5001"
+    environment:
+      DOCLING_SERVE_ENABLE_UI: "${DOCLING_SERVE_ENABLE_UI:?Define DOCLING_SERVE_ENABLE_UI}"
+      DOCLING_SERVE_ENG_KIND: "${DOCLING_SERVE_ENG_KIND:?Define DOCLING_SERVE_ENG_KIND}"
+      DOCLING_SERVE_MAX_SOURCES_PER_REQUEST: "${DOCLING_SERVE_MAX_SOURCES_PER_REQUEST:?Define DOCLING_SERVE_MAX_SOURCES_PER_REQUEST}"
+      DOCLING_SERVE_MAX_FILE_SIZE: "${DOCLING_SERVE_MAX_FILE_SIZE:?Define DOCLING_SERVE_MAX_FILE_SIZE}"
+      DOCLING_SERVE_MAX_NUM_PAGES: "${DOCLING_SERVE_MAX_NUM_PAGES:?Define DOCLING_SERVE_MAX_NUM_PAGES}"
+      DOCLING_SERVE_ENABLE_REMOTE_SERVICES: "${DOCLING_SERVE_ENABLE_REMOTE_SERVICES:?Define DOCLING_SERVE_ENABLE_REMOTE_SERVICES}"
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
 volumes:
   qdrant-data:
   tei-bge-m3-cache:

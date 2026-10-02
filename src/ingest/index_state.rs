@@ -11,7 +11,6 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{File, OpenOptions},
-    path::{Component, Path},
 };
 use uuid::Uuid;
 
@@ -19,28 +18,25 @@ pub(super) type Manifest = BTreeMap<String, Vec<StoredPoint>>;
 
 #[derive(Deserialize)]
 pub(super) struct StoredChunk {
-    pub relative_path: String,
-    pub content_hash: String,
-    pub chunk_index: usize,
-    pub embedding_version: String,
-    pub embedding_model: String,
-    pub embedding_dimension: usize,
-    pub embedding_preprocessing: String,
-    #[serde(default)]
-    pub document_id: String,
-    #[serde(default)]
-    pub pipeline_version: String,
-    #[serde(default)]
-    pub document_chunk_count: usize,
+    filename: String,
+    content_hash: String,
+    pub(super) chunk_index: usize,
+    embedding_version: String,
+    embedding_model: String,
+    embedding_dimension: usize,
+    embedding_preprocessing: String,
+    document_id: String,
+    pipeline_version: String,
+    document_chunk_count: usize,
 }
 
 pub(super) struct StoredPoint {
-    pub id: PointId,
-    pub chunk: StoredChunk,
+    pub(super) id: PointId,
+    pub(super) chunk: StoredChunk,
 }
 
-pub(super) fn document_id(corpus: &Uuid, relative_path: &str) -> Uuid {
-    Uuid::new_v5(corpus, relative_path.as_bytes())
+pub(super) fn document_id(corpus: &Uuid, filename: &str) -> Uuid {
+    Uuid::new_v5(corpus, filename.as_bytes())
 }
 
 pub(super) fn chunk_id(document: &Uuid, chunk_index: usize) -> PointId {
@@ -51,14 +47,11 @@ pub(super) fn chunk_id(document: &Uuid, chunk_index: usize) -> PointId {
 
 pub(super) fn pipeline_version(config: &Config, identity: &ModelIdentity) -> String {
     // Actualizar las versiones al cambiar la extracción o la fragmentación.
-    // Una integración de Docling debe incluir aquí su versión y configuración.
     let processing = serde_json::json!({
-        "schema": 1,
-        "extractor": "utf8-txt-md-v1",
-        "chunker": "paragraphs-headings-whitespace-v1",
-        "target": config.chunk_target_tokens,
+        "schema": 2,
+        "extractor": "docling-serve-1.36.0-chunks-jsonl-zip-v1",
+        "chunker": "docling-hybrid-contextualized-v1",
         "maximum": config.chunk_max_tokens,
-        "overlap": config.chunk_overlap_tokens,
         "embedding_model": config.embedding_model,
         "embedding_identity": identity,
         "embedding_dimension": config.embedding_dimension,
@@ -102,7 +95,7 @@ pub(super) async fn read_manifest(
     collection: &str,
 ) -> Result<Manifest> {
     let fields = [
-        "relative_path",
+        "filename",
         "content_hash",
         "chunk_index",
         "embedding_version",
@@ -142,15 +135,10 @@ pub(super) async fn read_manifest(
             {
                 bail!("La colección contiene embeddings incompatibles; no se modifica");
             }
-            if chunk.relative_path.is_empty()
-                || !Path::new(&chunk.relative_path)
-                    .components()
-                    .all(|component| matches!(component, Component::Normal(_)))
-            {
-                bail!("La colección contiene una ruta relativa inválida; no se modifica");
-            }
+            super::validate_filename(&chunk.filename)
+                .context("La colección contiene un nombre de documento inválido")?;
             manifest
-                .entry(chunk.relative_path.clone())
+                .entry(chunk.filename.clone())
                 .or_default()
                 .push(StoredPoint { id, chunk });
         }
@@ -168,7 +156,8 @@ pub(super) fn unchanged(
     pipeline: &str,
     points: &[StoredPoint],
 ) -> bool {
-    written(document, id, pipeline, points.len(), points)
+    points.len() == document.chunks.len()
+        && written(document, id, pipeline, document.chunks.len(), points)
 }
 
 pub(super) fn written(
