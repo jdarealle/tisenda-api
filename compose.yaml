@@ -17,10 +17,11 @@ services:
     volumes:
       - tei-bge-m3-cache:/data
   docling:
-    image: quay.io/docling-project/docling-serve-cpu:v1.36.0
+    image: quay.io/docling-project/docling-serve:v1.36.0
     ports:
       - "127.0.0.1:5001:5001"
     environment:
+      DOCLING_DEVICE: "${DOCLING_DEVICE:?Define DOCLING_DEVICE}"
       DOCLING_SERVE_ENABLE_UI: "${DOCLING_SERVE_ENABLE_UI:?Define DOCLING_SERVE_ENABLE_UI}"
       DOCLING_SERVE_ENG_KIND: "${DOCLING_SERVE_ENG_KIND:?Define DOCLING_SERVE_ENG_KIND}"
       DOCLING_SERVE_MAX_SOURCES_PER_REQUEST: "${DOCLING_SERVE_MAX_SOURCES_PER_REQUEST:?Define DOCLING_SERVE_MAX_SOURCES_PER_REQUEST}"
@@ -29,6 +30,10 @@ services:
       DOCLING_SERVE_ENABLE_REMOTE_SERVICES: "${DOCLING_SERVE_ENABLE_REMOTE_SERVICES:?Define DOCLING_SERVE_ENABLE_REMOTE_SERVICES}"
     extra_hosts:
       - "host.containers.internal:host-gateway"
+    devices:
+      - nvidia.com/gpu=all
+    security_opt:
+      - label=disable
 volumes:
   qdrant-data:
   tei-bge-m3-cache:

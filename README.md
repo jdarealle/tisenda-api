@@ -61,6 +61,15 @@ El comando `cargo run --locked -- --no-env-file serve` utiliza exclusivamente la
 
 Los volúmenes `qdrant-data` y `tei-bge-m3-cache` conservan, respectivamente, los datos de Qdrant y la caché del modelo de TEI.
 
+### Interfaces web
+
+Con los servicios en ejecución, abrir estas rutas en el navegador del host:
+
+| Servicio | Interfaz | URL |
+|---|---|---|
+| [Qdrant](https://qdrant.tech/documentation/web-ui/) | Dashboard de colecciones y puntos | [http://127.0.0.1:6333/dashboard](http://127.0.0.1:6333/dashboard) |
+| [Docling Serve](https://github.com/docling-project/docling-serve#demonstration-ui) | Playground de conversión de documentos | [http://127.0.0.1:5001/ui](http://127.0.0.1:5001/ui) |
+
 ## Ingesta de documentos
 
 ### Enviar un lote desde la terminal
