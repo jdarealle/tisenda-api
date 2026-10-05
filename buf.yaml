@@ -1,0 +1,14 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  # Conserva los nombres del contrato público de TEI solo en este archivo.
+  ignore_only:
+    SERVICE_SUFFIX:
+      - proto/tei/v1/tei.proto
+    RPC_REQUEST_STANDARD_NAME:
+      - proto/tei/v1/tei.proto
+    RPC_RESPONSE_STANDARD_NAME:
+      - proto/tei/v1/tei.proto
