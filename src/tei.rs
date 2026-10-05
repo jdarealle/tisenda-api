@@ -84,6 +84,50 @@ impl TeiModel {
         .await
     }
 
+    pub(crate) async fn input_limit(&self) -> Result<usize> {
+        let info = self.info().await?;
+        if info.max_input_length == 0 {
+            bail!("TEI no informa un max_input_length válido");
+        }
+        Ok(info.max_input_length as usize)
+    }
+
+    /// Same input and implicit prompt as Embed; special tokens count toward the limit.
+    pub(crate) async fn token_count(&self, text: &str) -> Result<usize> {
+        let mut client = proto::tokenize_client::TokenizeClient::new(self.channel.clone())
+            .max_decoding_message_size(64 * 1024 * 1024);
+        let response = tei_rpc(
+            "Tokenize",
+            EMBED_DEADLINE,
+            proto::EncodeRequest {
+                inputs: text.to_owned(),
+                add_special_tokens: true,
+                prompt_name: None,
+            },
+            move |request| async move { client.tokenize(request).await },
+        )
+        .await?;
+        Ok(response.tokens.len())
+    }
+
+    /// None means the request exceeds TEI's character guard even before tokenization.
+    pub(crate) async fn chunk_counts(
+        &self,
+        chunks: &[crate::DoclingChunk],
+        limit: usize,
+    ) -> Result<Vec<Option<usize>>> {
+        let mut counts = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            // TEI 1.9.4 Tokenize rejects inputs above max_input_length * 250 characters.
+            if chunk.text.chars().count() > limit.saturating_mul(250) {
+                counts.push(None);
+            } else {
+                counts.push(Some(self.token_count(&chunk.text).await?));
+            }
+        }
+        Ok(counts)
+    }
+
     pub(crate) async fn check_model(&self) -> Result<ModelIdentity> {
         let info = self.info().await?;
         if info.model_id != self.model {

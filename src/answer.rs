@@ -23,12 +23,16 @@ pub struct AnswerRequest {
 #[derive(Clone, Debug, Serialize)]
 pub struct Source {
     pub filename: String,
+    pub source_key: String,
     pub headings: Option<Vec<String>>,
     pub captions: Option<Vec<String>>,
     pub page_numbers: Option<Vec<usize>>,
     pub doc_items: Vec<String>,
     pub chunk_index: usize,
     pub score: f64,
+    pub location_kind: String,
+    /// Item provenance emitted by Docling, including native coordinates and ancestors.
+    pub provenance: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -49,7 +53,7 @@ pub async fn answer(config: &Config, request: AnswerRequest) -> Result<Answer> {
     let client = qdrant::client(config)?;
     let active = qdrant::active_collection(&client, &config.qdrant_alias)
         .await?
-        .context("No hay índice activo. Envía documentos a Docling primero")?;
+        .context("No hay índice activo. Ingiere documentos con POST /ingestions primero")?;
     let binding = qdrant::collection_binding(&client, config, &active).await?;
     let model = TeiModel::new(config)?;
     let identity = model
@@ -71,17 +75,39 @@ pub async fn answer(config: &Config, request: AnswerRequest) -> Result<Answer> {
     let mut context = String::new();
     let mut per_file: HashMap<String, usize> = HashMap::new();
     for (score, _, chunk) in results {
+        let source_key = chunk
+            .source_key
+            .clone()
+            .unwrap_or_else(|| chunk.native.filename.clone());
         let chunk = chunk.native;
+        let extension = std::path::Path::new(&chunk.filename)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let location_kind = match extension.as_str() {
+            "pdf" => "page",
+            "ppt" | "pptx" | "potx" | "ppsx" | "pptm" | "potm" | "ppsm" | "odp" => "slide",
+            "xls" | "xlsx" | "xlsm" | "xltx" | "xltm" | "ods" | "csv" => "sheet",
+            "doc" | "docx" | "dotx" | "docm" | "dotm" | "odt" | "md" | "txt" | "text" | "qmd"
+            | "rmd" | "adoc" | "asciidoc" | "asc" | "html" | "htm" | "xhtml" => "section",
+            "png" | "jpg" | "jpeg" | "tif" | "tiff" | "bmp" | "webp" => "image",
+            _ => "document",
+        };
         if score < 0.25 || sources.len() >= top_k {
             break;
         }
-        let count = per_file.entry(chunk.filename.clone()).or_default();
+        let count = per_file.entry(source_key.clone()).or_default();
         if *count >= 3 {
             continue;
         }
         let headings = chunk.headings.as_deref().unwrap_or_default().join(" > ");
-        let pages = chunk
-            .page_numbers
+        let actual_pages = if location_kind == "page" {
+            chunk.page_numbers.clone()
+        } else {
+            None
+        };
+        let pages = actual_pages
             .as_deref()
             .unwrap_or_default()
             .iter()
@@ -104,12 +130,20 @@ pub async fn answer(config: &Config, request: AnswerRequest) -> Result<Answer> {
         *count += 1;
         sources.push(Source {
             filename: chunk.filename,
+            source_key,
             headings: chunk.headings,
             captions: chunk.captions,
-            page_numbers: chunk.page_numbers,
+            page_numbers: actual_pages,
             doc_items: chunk.doc_items,
             chunk_index: chunk.chunk_index,
             score,
+            location_kind: location_kind.into(),
+            provenance: chunk
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("rag"))
+                .and_then(|r| r.get("provenance"))
+                .cloned(),
         });
     }
     if sources.is_empty() {

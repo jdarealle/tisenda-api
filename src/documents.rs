@@ -20,12 +20,16 @@ pub struct DoclingChunk {
 
 pub(crate) struct Document {
     pub(crate) filename: String,
+    pub(crate) source_key: String,
     pub(crate) chunks: Vec<DoclingChunk>,
     pub(crate) content_hash: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Embed)]
 pub(crate) struct Chunk {
+    /// Missing only in the legacy basename-based index, which remains readable.
+    #[serde(default)]
+    pub(crate) source_key: Option<String>,
     #[embed]
     #[serde(flatten)]
     pub(crate) native: DoclingChunk,

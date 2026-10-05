@@ -13,7 +13,7 @@ pub struct Config {
     pub embedding_dimension: usize,
     pub openai_model: String,
     pub openai_api_key: Option<String>,
-    pub chunk_max_tokens: usize,
+    pub chunk_target_tokens: usize,
     pub max_file_bytes: u64,
     pub top_k: usize,
 }
@@ -42,12 +42,20 @@ impl Config {
             embedding_dimension: number("EMBEDDING_DIMENSION", "1024")?,
             openai_model: value("OPENAI_MODEL", "gpt-5-mini"),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
-            chunk_max_tokens: number("CHUNK_MAX_TOKENS", "512")?,
+            chunk_target_tokens: {
+                if std::env::var_os("CHUNK_MAX_TOKENS").is_some() {
+                    tracing::warn!(
+                        "CHUNK_MAX_TOKENS está obsoleto; usa CHUNK_TARGET_TOKENS (objetivo, no límite de aceptación)"
+                    );
+                }
+                let legacy = std::env::var("CHUNK_MAX_TOKENS").unwrap_or_else(|_| "512".into());
+                number("CHUNK_TARGET_TOKENS", &legacy)?
+            },
             max_file_bytes: number("MAX_FILE_BYTES", "10485760")?,
             top_k: number("TOP_K", "5")?,
         };
         if config.embedding_dimension == 0
-            || config.chunk_max_tokens == 0
+            || config.chunk_target_tokens == 0
             || config.max_file_bytes == 0
             || config.top_k == 0
             || config.top_k > 50

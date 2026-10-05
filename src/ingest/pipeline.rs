@@ -13,20 +13,25 @@ pub async fn ingest_documents(
     let mut results = Vec::with_capacity(documents.len());
     let mut names = std::collections::HashMap::new();
     for doc in &documents {
-        *names.entry(doc.filename.clone()).or_insert(0usize) += 1;
+        *names.entry(doc.source_key.clone()).or_insert(0usize) += 1;
     }
     for doc in documents {
         let filename = doc.filename.clone();
+        let source_key = doc.source_key.clone();
         let result = async {
             document_processor::validate_filename(&filename)?;
-            if names[&filename] != 1 {
-                bail!("Nombre de documento duplicado");
+            if names[&source_key] != 1 {
+                bail!("source_key duplicada");
             }
             let document = document_processor::prepare(config, doc)?;
             ingest_document(config, document).await
         }
         .await;
-        results.push(DocumentIngestResult { filename, result });
+        results.push(DocumentIngestResult {
+            filename,
+            source_key,
+            result,
+        });
     }
     results
 }
@@ -52,6 +57,7 @@ async fn ingest_document(config: &Config, document: Document) -> Result<IngestRe
     };
     binding.validate_model(config, &identity)?;
     binding.validate_source(config)?;
+    binding.validate_ingestion()?;
     let corpus = binding.corpus_id()?;
     let manifest = if exists {
         index_state::read_manifest(&client, config, &collection).await?
@@ -67,6 +73,15 @@ async fn ingest_document(config: &Config, document: Document) -> Result<IngestRe
         &pipeline,
     );
     if !plan.changed.is_empty() {
+        let limit = model.input_limit().await?;
+        let counts = model.chunk_counts(&document.chunks, limit).await?;
+        for (index, count) in counts.into_iter().enumerate() {
+            if count.is_none_or(|n| n == 0 || n > limit) {
+                bail!(
+                    "Fragmento {index} excede la capacidad real de TEI ({limit} tokens): {count:?}"
+                );
+            }
+        }
         let checked_identity = model
             .preflight()
             .await
@@ -89,7 +104,7 @@ async fn ingest_document(config: &Config, document: Document) -> Result<IngestRe
         let confirmed = index_state::read_manifest(&client, config, &collection).await?;
         for document in &plan.changed {
             if !confirmed
-                .get(&document.source.filename)
+                .get(&document.source.source_key)
                 .is_some_and(|points| {
                     index_state::written(
                         document.source,
@@ -122,7 +137,7 @@ async fn ingest_document(config: &Config, document: Document) -> Result<IngestRe
         write::ensure_alias(&client, config, None).await?;
         qdrant::publish_alias(&client, &config.qdrant_alias, &collection).await?;
     }
-    write::ensure_alias(&client, config, Some(&collection)).await?;
+    write::ensure_alias(&client, config, Some(collection.as_str())).await?;
     Ok(IngestReport {
         chunks: expected,
         active_collection: collection,

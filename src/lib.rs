@@ -3,6 +3,7 @@ mod config;
 mod docling;
 mod documents;
 mod ingest;
+mod ingestions;
 mod qdrant;
 mod server;
 mod tei;

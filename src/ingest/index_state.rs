@@ -17,6 +17,7 @@ pub(super) type Manifest = BTreeMap<String, Vec<StoredPoint>>;
 #[derive(Deserialize)]
 pub(super) struct StoredChunk {
     filename: String,
+    source_key: String,
     content_hash: String,
     pub(super) chunk_index: usize,
     embedding_version: String,
@@ -33,8 +34,8 @@ pub(super) struct StoredPoint {
     pub(super) chunk: StoredChunk,
 }
 
-pub(super) fn document_id(corpus: &Uuid, filename: &str) -> Uuid {
-    Uuid::new_v5(corpus, filename.as_bytes())
+pub(super) fn document_id(corpus: &Uuid, source_key: &str) -> Uuid {
+    Uuid::new_v5(corpus, source_key.as_bytes())
 }
 
 pub(super) fn chunk_id(document: &Uuid, chunk_index: usize) -> PointId {
@@ -46,10 +47,11 @@ pub(super) fn chunk_id(document: &Uuid, chunk_index: usize) -> PointId {
 pub(super) fn pipeline_version(config: &Config, identity: &ModelIdentity) -> String {
     // Actualizar las versiones al cambiar la extracción o la fragmentación.
     let processing = serde_json::json!({
-        "schema": 2,
+        "schema": 4,
         "extractor": "docling-serve-1.36.0-chunks-jsonl-zip-v1",
         "chunker": "docling-hybrid-contextualized-v1",
-        "maximum": config.chunk_max_tokens,
+        "target": config.chunk_target_tokens,
+        "validation": "tei-tokenize-special-tokens-v1",
         "embedding_model": config.embedding_model,
         "embedding_identity": identity,
         "embedding_dimension": config.embedding_dimension,
@@ -94,6 +96,7 @@ pub(super) async fn read_manifest(
 ) -> Result<Manifest> {
     let fields = [
         "filename",
+        "source_key",
         "content_hash",
         "chunk_index",
         "embedding_version",
@@ -135,8 +138,12 @@ pub(super) async fn read_manifest(
             }
             super::validate_filename(&chunk.filename)
                 .context("La colección contiene un nombre de documento inválido")?;
+            super::validate_source_key(&chunk.source_key)?;
+            if chunk.source_key.rsplit('/').next() != Some(chunk.filename.as_str()) {
+                bail!("source_key incompatible con el nombre del documento indexado");
+            }
             manifest
-                .entry(chunk.filename.clone())
+                .entry(chunk.source_key.clone())
                 .or_default()
                 .push(StoredPoint { id, chunk });
         }
@@ -176,7 +183,8 @@ pub(super) fn written(
         if chunk.chunk_index >= expected || point.id != chunk_id(id, chunk.chunk_index) {
             continue;
         }
-        if chunk.content_hash != document.content_hash
+        if chunk.source_key != document.source_key
+            || chunk.content_hash != document.content_hash
             || chunk.document_id != document_id
             || chunk.pipeline_version != pipeline
             || chunk.document_chunk_count != expected

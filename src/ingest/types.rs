@@ -12,15 +12,17 @@ pub struct IngestReport {
     pub chunks_written: usize,
 }
 
-/// A converted document. Its original filename is its stable identity within the corpus.
+/// A converted document. Its source key is relative to the configured root and identifies it within the corpus.
 #[derive(Clone, Debug)]
 pub struct IngestDocument {
     pub filename: String,
+    pub source_key: String,
     pub chunks: Vec<DoclingChunk>,
 }
 
 #[derive(Debug)]
 pub struct DocumentIngestResult {
     pub filename: String,
+    pub source_key: String,
     pub result: Result<IngestReport>,
 }

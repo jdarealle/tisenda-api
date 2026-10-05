@@ -1,164 +1,176 @@
 # RAG con Docling
 
-API HTTP y biblioteca en Rust para indexar documentos y consultar su contenido mediante generación aumentada por recuperación (RAG).
+API HTTP y biblioteca Rust para ingerir documentos desde una carpeta y responder preguntas con referencias a los archivos originales. Docling convierte y fragmenta; TEI valida tokens y genera embeddings; Qdrant almacena el índice; OpenAI genera las respuestas.
 
 ## Arquitectura
 
-Docling Serve convierte los documentos y los fragmenta mediante HybridChunker. Exporta los fragmentos contextualizados en JSONL dentro de un ZIP. La API Rust recibe el callback de conversión, descarga el resultado y valida los fragmentos. TEI genera embeddings por gRPC; Qdrant almacena los vectores y ejecuta las búsquedas por gRPC. El modelo de OpenAI genera respuestas en español con referencias a los fragmentos recuperados.
-
 ```mermaid
 flowchart LR
-    Cliente -->|Documentos por HTTP|Docling[Docling Serve]
-    Docling -->|Callback JSON|API[API Rust / Axum]
-    API -->|Descarga del ZIP por HTTP|Docling
-    API -->|Embeddings por gRPC|TEI
-    API -->|Vectores y búsquedas por gRPC|Qdrant
+    Cliente -->|POST /ingestions: selección JSON|API[API Rust / Axum]
+    Origen[DOCUMENTS_ROOT: originales] -->|Lectura y validación|API
+    API -->|Conversión y chunks|Docling[Docling Serve]
+    Docling -->|JSON, chunks y recursos|API
+    API -->|Tokenize y Embed por gRPC|TEI
+    API -->|Contenido, vectores y referencias|Qdrant
     Cliente -->|POST /query|API
-    API -->|Generación por HTTPS|OpenAI
+    API -->|Generación de respuestas|OpenAI
 ```
 
-La API Rust se ejecuta en el host. Docling, TEI y Qdrant se ejecutan en contenedores definidos en [compose.yaml](compose.yaml).
+La API se ejecuta en el host. [compose.yaml](compose.yaml) define Docling Serve 1.36.0, TEI 1.9.4 y Qdrant 1.19.1. Qdrant y la caché del modelo TEI utilizan volúmenes de Podman.
 
-Docling accede al webhook del host mediante `http://host.containers.internal:3000/webhooks/docling`.
+## Configuración y ejecución
 
-## Configuración
+Requisitos: Linux, Rust/Cargo con soporte para edición 2024, `protoc` y Podman con un proveedor de Compose. El Compose incluye el dispositivo NVIDIA `nvidia.com/gpu=all`; requiere que esté disponible mediante CDI.
 
-Desde la raíz del proyecto, crear la configuración local a partir de la plantilla:
+Crear la configuración local y ajustar sus valores:
 
 ```bash
 cp .env.example .env
 ```
 
-Editar `OPENAI_API_KEY` y revisar [.env.example](.env.example), que agrupa las variables por servicio e incluye sus valores y descripciones. La API carga `.env` al iniciar; las variables ya presentes en el proceso tienen prioridad. Compose utiliza las variables del entorno y `.env` para interpolar la configuración de los contenedores.
+Las variables están documentadas en [.env.example](.env.example). La API carga `.env` al iniciar y respeta las variables ya definidas en el proceso. Los cambios de configuración requieren reiniciar el componente correspondiente.
 
-El modelo, la revisión y la dimensión configurados deben coincidir con TEI. Los metadatos del índice vinculan el corpus con la identidad del modelo y la configuración de embeddings.
+| Variable | Uso |
+|---|---|
+| `HTTP_BIND` | Dirección de escucha de la API; predeterminado `0.0.0.0:3000`. |
+| `DOCUMENTS_ROOT` | Carpeta de originales; predeterminado `manuales`. Debe existir y ser legible al iniciar. |
+| `QDRANT_URL`, `QDRANT_ALIAS` | Endpoint gRPC y alias del índice. |
+| `TEI_URL` | Endpoint gRPC de embeddings. |
+| `EMBEDDING_MODEL`, `EMBEDDING_REVISION`, `EMBEDDING_DIMENSION` | Identidad del modelo, compatible con el servicio TEI y el índice. |
+| `DOCLING_URL` | Endpoint HTTP de Docling Serve. |
+| `OPENAI_MODEL`, `OPENAI_API_KEY` | Modelo y credenciales para generar respuestas. |
+| `TOP_K` | Cantidad predeterminada de fuentes; `5`. |
+| `RUST_LOG` | Filtro de logs; predeterminado `rag=info`. |
 
-HybridChunker utiliza el tokenizador configurado en la solicitud a Docling. `chunking_options.tokenizer` debe coincidir con `EMBEDDING_MODEL`, y `chunking_options.max_tokens` con `CHUNK_MAX_TOKENS`. Rust exige un `num_tokens` positivo dentro de ese límite para cada fragmento. TEI genera los embeddings con truncamiento desactivado.
-
-## Ejecución
-
-Iniciar los servicios y consultar sus logs:
+Las rutas relativas de `DOCUMENTS_ROOT` se resuelven desde el directorio de ejecución.
 
 ```bash
 podman compose up -d
 podman compose logs -f docling tei
 ```
 
-Cuando Docling esté listo, iniciar la API Rust en otra terminal:
+Iniciar la API cuando los servicios estén disponibles:
 
 ```bash
 curl --fail-with-body http://127.0.0.1:5001/ready
-cargo run --locked -- serve
+cargo run --locked
 ```
 
-Comprobar la respuesta HTTP de la API:
-
-```bash
-curl --fail-with-body http://127.0.0.1:3000/health
-```
-
-El comando `cargo run --locked -- --no-env-file serve` utiliza exclusivamente las variables del proceso. `RUST_LOG` controla el filtro de logs; el filtro predeterminado es `rag=info`.
-
-Los volúmenes `qdrant-data` y `tei-bge-m3-cache` conservan, respectivamente, los datos de Qdrant y la caché del modelo de TEI.
-
-### Interfaces web
-
-Con los servicios en ejecución, abrir estas rutas en el navegador del host:
-
-| Servicio | Interfaz | URL |
-|---|---|---|
-| [Qdrant](https://qdrant.tech/documentation/web-ui/) | Dashboard de colecciones y puntos | [http://127.0.0.1:6333/dashboard](http://127.0.0.1:6333/dashboard) |
-| [Docling Serve](https://github.com/docling-project/docling-serve#demonstration-ui) | Playground de conversión de documentos | [http://127.0.0.1:5001/ui](http://127.0.0.1:5001/ui) |
-
-## Ingesta de documentos
-
-### Enviar un lote desde la terminal
-
-El endpoint de Docling `POST /v1/convert/file/async` recibe una solicitud `multipart/form-data`. Cada campo `files` adjunta un documento al mismo lote. Este ejemplo utiliza los archivos incluidos en [manuales/](manuales/):
-
-```bash
-curl --fail-with-body \
-  http://127.0.0.1:5001/v1/convert/file/async \
-  -F 'files=@manuales/acceso.md' \
-  -F 'files=@manuales/solicitud-compras.md' \
-  -F 'files=@manuales/gestion-documentos.md' \
-  -F 'to_formats=chunks' \
-  -F 'chunking_options={"chunker":"hybrid","tokenizer":"BAAI/bge-m3","max_tokens":512,"merge_peers":true,"include_raw_text":false,"use_markdown_tables":false,"use_markdown_images":false}' \
-  -F 'target_type=zip' \
-  -F 'image_export_mode=placeholder' \
-  -F 'abort_on_error=false' \
-  -F 'callbacks=http://host.containers.internal:3000/webhooks/docling'
-```
-
-Docling devuelve un `task_id` para el lote. Para enviar otros documentos, sustituir las rutas y añadir campos `files` hasta el límite de `DOCLING_SERVE_MAX_SOURCES_PER_REQUEST`. El ejemplo utiliza el modelo y el límite de tokens de `.env.example`; ajustar ambos valores de `chunking_options` al cambiar esa configuración.
-
-| Campo | Valor utilizado | Propósito |
-|---|---|---|
-| `files` | Un campo por documento | Adjuntar los originales |
-| `to_formats` | `chunks` | Exportar fragmentos nativos en JSONL |
-| `chunking_options` | Objeto JSON con `chunker=hybrid` | Configurar tokenizador, límite y contextualización |
-| `target_type` | `zip` | Agrupar los resultados en un archivo descargable |
-| `image_export_mode` | `placeholder` | Representar las imágenes con marcadores |
-| `abort_on_error` | `false` | Permitir resultados individuales dentro del lote |
-| `callbacks` | URL del webhook Rust | Notificar el progreso y el resultado de la conversión |
-
-### Procesamiento del resultado
-
-1. Docling envía un callback JSON a `POST /webhooks/docling`.
-2. El evento `update_processed` inicia el procesamiento del lote en segundo plano.
-3. Si hay conversiones con estado `success`, Rust realiza una descarga de `GET /v1/result/{task_id}`.
-4. Rust abre el ZIP en memoria y lee `<nombre>.chunks.jsonl`, con un objeto JSON por línea.
-5. Valida todo el documento: nombre original, índices consecutivos desde cero, texto y tokens. Si existe `metadata.origin`, su `filename` debe coincidir con el original.
-6. Rust envía el campo `text` de cada fragmento a TEI y escribe el vector y los metadatos nativos en Qdrant.
-7. El resultado de cada documento se registra en los logs.
-
-Los nombres originales identifican los documentos. Cada lote debe utilizar nombres base distintos: `acceso.pdf` y `compras.docx` generan `acceso.chunks.jsonl` y `compras.chunks.jsonl`. Un lote que contenga `manual.pdf` y `manual.docx` produce una correspondencia ambigua; ambos documentos se registran como fallidos.
-
-Se indexan documentos con conversión `success` y fragmentos válidos. Las conversiones parciales, los documentos vacíos y los resultados inválidos se registran como fallidos. Los documentos válidos del lote se procesan de forma independiente. Los archivos del ZIP se leen en memoria.
-
-### Contrato de los fragmentos JSONL
-
-Cada línea sigue el esquema nativo `ChunkedDocumentResultItem` de Docling:
-
-| Campo | Tipo | Uso |
-|---|---|---|
-| `filename` | `string` | Nombre original del documento |
-| `chunk_index` | `integer` | Posición consecutiva desde cero |
-| `text` | `string` | Texto contextualizado que se envía a TEI |
-| `raw_text` | `string` o `null` | Texto sin contexto; el ejemplo lo omite mediante `include_raw_text=false` |
-| `num_tokens` | `integer` | Tokens del texto contextualizado contados por HybridChunker |
-| `headings` | Lista de strings o `null` | Encabezados del fragmento |
-| `captions` | Lista de strings o `null` | Leyendas del fragmento |
-| `doc_items` | Lista de strings | Referencias a elementos del documento, como `#/texts/0` |
-| `page_numbers` | Lista de enteros o `null` | Páginas de origen, comenzando en uno |
-| `metadata` | Objeto o `null` | Metadatos adicionales, incluidos origen e indicadores de imágenes |
-
-El payload de Qdrant conserva estos campos junto con la identidad y los hashes del índice. `text` ya contiene el contexto estructural generado por Docling; se utiliza directamente para embeddings.
-
-Los enteros de `metadata` que superan el rango de 64 bits con signo se almacenan como cadenas decimales para conservar su precisión, por ejemplo ciertos valores de `origin.binary_hash`. El hash del documento se calcula sobre los valores nativos antes de esa adaptación.
+| Servicio | Interfaz local |
+|---|---|
+| API | `http://127.0.0.1:3000/health` |
+| Docling | `http://127.0.0.1:5001/ui` |
+| Qdrant | `http://127.0.0.1:6333/dashboard` |
 
 ## API HTTP
 
-La API acepta cuerpos JSON de hasta 256 KiB.
+Las solicitudes utilizan JSON y admiten cuerpos de hasta 256 KiB.
 
 | Método | Ruta | Función |
 |---|---|---|
-| `GET` | `/health` | Comprobar que la API responde |
-| `POST` | `/query` | Consultar el corpus |
-| `POST` | `/webhooks/docling` | Recibir los callbacks de Docling |
+| `GET` | `/health` | Devuelve `{"status":"ok"}`; comprueba que la API responde. |
+| `POST` | `/ingestions` | Procesa una selección de originales y devuelve el resultado al terminar. |
+| `POST` | `/query` | Responde una pregunta con fuentes del índice. |
 
-### Consultar documentos
+### Ingesta
 
-Con la API en ejecución y los documentos indexados, enviar una pregunta a `POST /query`. Este ejemplo consulta el contenido de [manuales/acceso.md](manuales/acceso.md):
+Procesar toda la raíz, incluyendo subcarpetas:
 
 ```bash
-curl --fail-with-body \
-  http://127.0.0.1:3000/query \
+curl --fail-with-body http://127.0.0.1:3000/ingestions \
   -H 'Content-Type: application/json' \
-  -d '{
-    "question": "¿Qué datos necesito para solicitar una cuenta?",
-    "top_k": 5
-  }'
+  -d '{}'
 ```
 
-La respuesta JSON contiene `text` con la respuesta y `sources` con las referencias a los fragmentos recuperados. `top_k` es opcional, admite valores de 1 a 50 y utiliza `TOP_K` al omitirse.
+Seleccionar archivos o carpetas mediante rutas relativas:
+
+```bash
+curl --fail-with-body http://127.0.0.1:3000/ingestions \
+  -H 'Content-Type: application/json' \
+  -d '{"paths":["consumibles-impresoras.pdf","catalogo-software-ti.xlsx"]}'
+```
+
+`paths` omitido o vacío selecciona toda la raíz. La selección se ordena y deduplica. Se excluyen entradas ocultas de la exploración; se rechazan rutas explícitas ocultas, absolutas, con `..` o con enlaces simbólicos.
+
+La API procesa un archivo a la vez y admite un único lote activo por proceso. Los clientes y proxies deben permitir conexiones largas. Los rechazos y fallos individuales permiten continuar con los demás archivos; las conversiones parciales con chunks válidos se indexan con advertencias.
+
+La respuesta contiene:
+
+- `counts`: `total`, `completed`, `completed_with_warnings`, `rejected` y `failed`. Los contadores de estado son excluyentes.
+- `documents`: resultados individuales con `filename`, `source_key`, `status`, `stage`, `original_sha256`, `task_ids`, `chunks`, `warnings`, `error` y `profile`.
+
+`error` es `null` o un objeto con `code` y `message`. Los códigos por archivo son `unsupported_extension` y `processing_failed`. Las etapas son `validation`, `snapshot`, `conversion`, `download`, `tokens`, `rechunk`, `index` y `done`. `chunks` informa los fragmentos preparados; un estado `completed` o `completed_with_warnings` confirma la indexación.
+
+| Estado HTTP | Significado en `/ingestions` |
+|---|---|
+| `200` | Lote terminado; revisar los resultados individuales. Una selección vacía devuelve contadores en cero. |
+| `400` | JSON o selección inválidos. |
+| `409` | El esquema del índice es incompatible con la ingesta. |
+| `502` | Falló la comprobación del índice en Qdrant. |
+| `503` | Ya existe un lote activo. |
+
+### Formatos admitidos
+
+La API valida la extensión antes de crear temporales o enviar el archivo a Docling. La comparación no distingue mayúsculas. Docling valida posteriormente el contenido.
+
+| Formato | Extensiones |
+|---|---|
+| PDF | `.pdf` |
+| Word OOXML | `.docx`, `.dotx`, `.docm`, `.dotm` |
+| PowerPoint OOXML | `.pptx`, `.potx`, `.ppsx`, `.pptm`, `.potm`, `.ppsm` |
+| Excel OOXML | `.xlsx`, `.xlsm`, `.xltx`, `.xltm` |
+| HTML | `.html`, `.htm`, `.xhtml` |
+| Markdown y texto | `.md`, `.txt`, `.text`, `.qmd`, `.rmd` |
+| CSV | `.csv` |
+| AsciiDoc | `.adoc`, `.asciidoc`, `.asc` |
+| Imágenes | `.jpg`, `.jpeg`, `.png`, `.tif`, `.tiff`, `.bmp`, `.webp` |
+| Subtítulos | `.vtt` |
+
+Los archivos sin extensión o fuera del catálogo reciben `status="rejected"`, `stage="validation"` y `error.code="unsupported_extension"`.
+
+### Consultas
+
+```bash
+curl --fail-with-body http://127.0.0.1:3000/query \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"¿Qué consumible utiliza la impresora de recepción?","top_k":5}'
+```
+
+`question` debe contener texto. `top_k` admite de 1 a 50 y utiliza `TOP_K` cuando se omite. La respuesta contiene `text` y `sources`; cada fuente incluye `filename`, `source_key`, `headings`, `captions`, `page_numbers`, `doc_items`, `chunk_index`, `score`, `location_kind` y `provenance`.
+
+Las páginas se devuelven para PDF. Otros formatos conservan el tipo de ubicación y la procedencia disponible en Docling. Cuando no hay evidencia suficiente, la respuesta indica esa ausencia y devuelve una lista de fuentes vacía.
+
+## Conversión y límites
+
+Docling es el único responsable de crear los chunks. La API solicita JSON estructurado y chunks con texto contextualizado y texto original, tablas en modo `accurate` y jerarquía de encabezados PDF.
+
+| Variable | Predeterminado | Comportamiento |
+|---|---|---|
+| `DOCLING_IMAGE_EXPORT_MODE` | `referenced` | `referenced`: recursos del ZIP; `embedded`: imágenes dentro del JSON; `placeholder`: estructura sin datos de imagen. |
+| `DOCLING_DO_OCR` | `true` | Habilita o deshabilita OCR, independientemente del modo de imágenes. |
+| `DOCLING_OCR_PRESET` | `auto` | Preset enviado cuando OCR está habilitado; debe estar disponible en Docling. |
+| `CHUNK_TARGET_TOKENS` | `512` | Objetivo solicitado a HybridChunker. |
+
+La conversión mantiene deshabilitadas la descripción de imágenes, clasificación visual y extracción de gráficos mediante modelos.
+
+La API consulta la capacidad real de TEI y cuenta el texto final con su tokenizador, incluyendo tokens especiales. Los embeddings se generan con `truncate=false`. Si un chunk excede la capacidad, Docling vuelve a fragmentar el JSON temporal con la mitad del presupuesto: hasta tres ajustes, deteniéndose si repite el resultado incompatible. Un exceso no resuelto falla el documento.
+
+| Variable | Predeterminado | Límite |
+|---|---|---|
+| `DOCLING_SERVE_MAX_FILE_SIZE` | 50 MiB | Tamaño del original. |
+| `DOCLING_SERVE_MAX_NUM_PAGES` | 200 | Páginas por documento en Docling. |
+| `DOCLING_SERVE_MAX_SOURCES_PER_REQUEST` | 20 | Fuentes por solicitud a Docling; la API envía un archivo por tarea. |
+| `MAX_FILE_BYTES` | 10 MiB | JSONL de chunks y representación normalizada para indexación. |
+| `DOCLING_MAX_DOWNLOAD_BYTES` | 32 MiB | ZIP comprimido por tarea. |
+| `DOCLING_MAX_EXPANDED_BYTES` | 128 MiB | Recursos descomprimidos del ZIP. |
+| `DOCLING_MAX_ARCHIVE_ENTRIES` | 200 | Entradas del ZIP. |
+| `DOCLING_REQUEST_TIMEOUT_SECS` | 120 | Tiempo por solicitud HTTP a Docling. |
+| `DOCLING_CONVERSION_TIMEOUT_SECS` | 1800 | Espera de finalización de cada tarea de Docling. |
+
+## Almacenamiento e identidad
+
+`DOCUMENTS_ROOT` conserva los originales. La API utiliza una copia temporal por documento y elimina los temporales al finalizar o ante errores controlados. Qdrant conserva contenido, embeddings, hash del original, perfil y procedencia. Los ZIP y recursos exportados se procesan en memoria dentro de los límites configurados.
+
+`filename` es el nombre visible (`manual.pdf`); `source_key` es la ruta relativa que identifica el documento (`impresoras/manual.pdf`). Archivos con igual nombre en distintas subcarpetas tienen identidades diferentes. Una ingesta actualiza únicamente los documentos seleccionados; los documentos ausentes permanecen en el índice. Renombrar la ruta crea otra identidad.
+
+Los resultados del lote existen durante la solicitud. Los errores de ejecución se informan sin reintentos automáticos. Un fallo de escritura en Qdrant puede dejar puntos parciales; la actualización documental no es transaccional. Un cierre abrupto puede dejar residuos temporales. El bloqueo de escritura coordina procesos del mismo host.

@@ -37,8 +37,8 @@ pub(super) fn build<'a>(
         expected_chunks: manifest.values().map(Vec::len).sum(),
     };
     for document in documents {
-        let id = index_state::document_id(corpus, &document.filename);
-        let previous = manifest.get(&document.filename);
+        let id = index_state::document_id(corpus, &document.source_key);
+        let previous = manifest.get(&document.source_key);
         if previous.is_some_and(|points| index_state::unchanged(document, &id, pipeline, points)) {
             plan.files_unchanged += 1;
             continue;
@@ -49,6 +49,7 @@ pub(super) fn build<'a>(
             .cloned()
             .map(|native| Chunk {
                 native,
+                source_key: Some(document.source_key.clone()),
                 content_hash: document.content_hash.clone(),
                 embedding_version: config.embedding_version(),
                 embedding_model: config.embedding_model.clone(),

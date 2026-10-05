@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 const METADATA_KEY: &str = "rag_ingest";
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 const CORPUS_SOURCE: &str = "docling-manual";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -48,14 +48,14 @@ impl CollectionBinding {
     }
 
     pub(crate) fn validate_model(&self, config: &Config, identity: &ModelIdentity) -> Result<()> {
-        if self.schema_version != SCHEMA_VERSION {
+        if !matches!(self.schema_version, 2 | SCHEMA_VERSION) {
             bail!("Versión de metadatos del índice no compatible");
         }
         self.corpus_id()?;
         if self.embedding_version != config.embedding_version() || &self.model_identity != identity
         {
             bail!(
-                "El modelo, revisión o configuración de embeddings cambió; se requiere una reconstrucción explícita del índice"
+                "El modelo, revisión o configuración de embeddings no coincide con el índice activo"
             );
         }
         Ok(())
@@ -64,6 +64,13 @@ impl CollectionBinding {
     pub(crate) fn validate_source(&self, config: &Config) -> Result<()> {
         if self.source != CORPUS_SOURCE || self.alias != config.qdrant_alias {
             bail!("La colección no corresponde al corpus Docling y al alias configurado");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_ingestion(&self) -> Result<()> {
+        if self.schema_version != SCHEMA_VERSION {
+            bail!("El esquema del índice no es compatible con la ingesta actual");
         }
         Ok(())
     }
@@ -137,9 +144,7 @@ pub(crate) async fn collection_binding(
     collection: &str,
 ) -> Result<CollectionBinding> {
     if !collection.starts_with(&format!("rag_{}_", config.embedding_version())) {
-        bail!(
-            "La colección no corresponde a la configuración de embeddings; se requiere una reconstrucción explícita"
-        );
+        bail!("La colección no corresponde a la configuración de embeddings");
     }
     let info = client
         .collection_info(collection)

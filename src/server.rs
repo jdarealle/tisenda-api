@@ -1,6 +1,6 @@
 use crate::{
     AnswerRequest, Config, answer,
-    docling::{self, ArchiveLimits, Callback, Progress},
+    ingestions::{BatchResult, Manager, Selection},
     qdrant,
 };
 use anyhow::{Context, Result, bail};
@@ -11,8 +11,8 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use serde_json::{Value, json};
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use serde_json::json;
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
@@ -22,6 +22,12 @@ pub struct ServerConfig {
     pub max_expanded_bytes: u64,
     pub max_archive_entries: usize,
     pub request_timeout_secs: u64,
+    pub conversion_timeout_secs: u64,
+    pub image_export_mode: String,
+    pub do_ocr: bool,
+    pub ocr_preset: String,
+    pub documents_root: PathBuf,
+    pub max_original_bytes: u64,
 }
 
 impl ServerConfig {
@@ -40,19 +46,60 @@ impl ServerConfig {
             max_expanded_bytes: value("DOCLING_MAX_EXPANDED_BYTES", "134217728").parse()?,
             max_archive_entries: value("DOCLING_MAX_ARCHIVE_ENTRIES", "200").parse()?,
             request_timeout_secs: value("DOCLING_REQUEST_TIMEOUT_SECS", "120").parse()?,
+            conversion_timeout_secs: value("DOCLING_CONVERSION_TIMEOUT_SECS", "1800").parse()?,
+            image_export_mode: value("DOCLING_IMAGE_EXPORT_MODE", "referenced"),
+            do_ocr: value("DOCLING_DO_OCR", "true")
+                .parse()
+                .context("DOCLING_DO_OCR debe ser true o false")?,
+            ocr_preset: value("DOCLING_OCR_PRESET", "auto"),
+            documents_root: value("DOCUMENTS_ROOT", "manuales").into(),
+            max_original_bytes: value("DOCLING_SERVE_MAX_FILE_SIZE", "52428800").parse()?,
         })
+    }
+    pub(crate) fn validate(&mut self, config: &Config) -> Result<()> {
+        if !matches!(self.docling_url.scheme(), "http" | "https")
+            || self.docling_url.host_str().is_none()
+            || self.docling_url.query().is_some()
+            || self.docling_url.fragment().is_some()
+            || !self.docling_url.username().is_empty()
+            || self.docling_url.password().is_some()
+        {
+            bail!("DOCLING_URL debe ser una URL HTTP válida sin credenciales, query ni fragmento");
+        }
+        if !self.docling_url.path().ends_with('/') {
+            self.docling_url
+                .set_path(&format!("{}/", self.docling_url.path()));
+        }
+        if self.max_download_bytes == 0
+            || self.max_expanded_bytes == 0
+            || self.max_archive_entries == 0
+            || self.request_timeout_secs == 0
+            || self.max_expanded_bytes == u64::MAX
+            || config.max_file_bytes == u64::MAX
+            || self.conversion_timeout_secs == 0
+            || self.max_original_bytes == 0
+        {
+            bail!("Límites HTTP/ZIP inválidos");
+        }
+        if !matches!(
+            self.image_export_mode.as_str(),
+            "referenced" | "embedded" | "placeholder"
+        ) {
+            bail!("DOCLING_IMAGE_EXPORT_MODE debe ser referenced, embedded o placeholder");
+        }
+        if self.do_ocr && self.ocr_preset.trim().is_empty() {
+            bail!("DOCLING_OCR_PRESET no puede estar vacío cuando DOCLING_DO_OCR=true");
+        }
+        Ok(())
     }
 }
 
 struct AppState {
     config: Config,
-    server: ServerConfig,
-    http: reqwest::Client,
-    // Local mutual exclusion only: no registry, durable queue or retry state.
-    ingest: Arc<tokio::sync::Mutex<()>>,
+    ingestions: Arc<Manager>,
 }
 
-struct ApiError(StatusCode, &'static str);
+struct ApiError(StatusCode, String);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.0, Json(json!({"error": self.1}))).into_response()
@@ -60,45 +107,15 @@ impl IntoResponse for ApiError {
 }
 
 pub fn router(config: Config, mut server: ServerConfig) -> Result<Router> {
-    if !matches!(server.docling_url.scheme(), "http" | "https")
-        || server.docling_url.host_str().is_none()
-        || server.docling_url.query().is_some()
-        || server.docling_url.fragment().is_some()
-        || !server.docling_url.username().is_empty()
-        || server.docling_url.password().is_some()
-    {
-        bail!("DOCLING_URL debe ser una URL HTTP válida sin credenciales, query ni fragmento");
-    }
-    if !server.docling_url.path().ends_with('/') {
-        server
-            .docling_url
-            .set_path(&format!("{}/", server.docling_url.path()));
-    }
-    if server.max_download_bytes == 0
-        || server.max_expanded_bytes == 0
-        || server.max_archive_entries == 0
-        || server.request_timeout_secs == 0
-        || server.max_expanded_bytes == u64::MAX
-        || config.max_file_bytes == u64::MAX
-    {
-        bail!("Límites HTTP/ZIP inválidos");
-    }
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(server.request_timeout_secs))
-        .connect_timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .retry(reqwest::retry::never())
-        .build()?;
+    server.validate(&config)?;
     let state = Arc::new(AppState {
+        ingestions: Arc::new(Manager::new(config.clone(), server)?),
         config,
-        server,
-        http,
-        ingest: Arc::new(tokio::sync::Mutex::new(())),
     });
     Ok(Router::new()
         .route("/health", get(|| async { Json(json!({"status": "ok"})) }))
         .route("/query", post(query))
-        .route("/webhooks/docling", post(callback))
+        .route("/ingestions", post(ingest_batch))
         .layer(DefaultBodyLimit::max(256 * 1024))
         .with_state(state))
 }
@@ -117,69 +134,72 @@ async fn query(
     State(state): State<Arc<AppState>>,
     payload: Result<Json<AnswerRequest>, JsonRejection>,
 ) -> Result<Json<crate::Answer>, ApiError> {
-    let Json(request) =
-        payload.map_err(|_| ApiError(StatusCode::BAD_REQUEST, "JSON de consulta inválido"))?;
+    let Json(request) = payload
+        .map_err(|_| ApiError(StatusCode::BAD_REQUEST, "JSON de consulta inválido".into()))?;
     if request.question.trim().is_empty()
         || !(1..=50).contains(&request.top_k.unwrap_or(state.config.top_k))
     {
         return Err(ApiError(
             StatusCode::BAD_REQUEST,
-            "Pregunta vacía o top_k fuera de 1..50",
+            "Pregunta vacía o top_k fuera de 1..50".into(),
         ));
     }
-    let client = qdrant::client(&state.config)
-        .map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "Configuración inválida"))?;
+    let client = qdrant::client(&state.config).map_err(|_| {
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Configuración inválida".into(),
+        )
+    })?;
     let active = qdrant::active_collection(&client, &state.config.qdrant_alias)
         .await
-        .map_err(|_| ApiError(StatusCode::BAD_GATEWAY, "No se pudo consultar Qdrant"))?;
+        .map_err(|_| {
+            ApiError(
+                StatusCode::BAD_GATEWAY,
+                "No se pudo consultar Qdrant".into(),
+            )
+        })?;
     if active.is_none() {
         return Err(ApiError(
             StatusCode::SERVICE_UNAVAILABLE,
-            "No hay índice activo",
+            "No hay índice activo".into(),
         ));
     }
-    answer(&state.config, request)
-        .await
-        .map(Json)
-        .map_err(|_| ApiError(StatusCode::BAD_GATEWAY, "No se pudo generar la respuesta"))
+    answer(&state.config, request).await.map(Json).map_err(|_| {
+        ApiError(
+            StatusCode::BAD_GATEWAY,
+            "No se pudo generar la respuesta".into(),
+        )
+    })
 }
 
-async fn callback(
+async fn ingest_batch(
     State(state): State<Arc<AppState>>,
-    payload: Result<Json<Callback>, JsonRejection>,
-) -> Result<Json<Value>, ApiError> {
-    let Json(callback) =
-        payload.map_err(|_| ApiError(StatusCode::BAD_REQUEST, "Callback inválido"))?;
-    uuid::Uuid::parse_str(&callback.task_id)
-        .map_err(|_| ApiError(StatusCode::BAD_REQUEST, "task_id inválido"))?;
-    if let Progress::UpdateProcessed(batch) = callback.progress {
-        batch
-            .validate()
-            .map_err(|_| ApiError(StatusCode::BAD_REQUEST, "Resumen de conversión inválido"))?;
-        let task_id = callback.task_id;
-        match state.ingest.clone().try_lock_owned() {
-            Ok(guard) => {
-                tokio::spawn(async move {
-                    let _guard = guard;
-                    let limits = ArchiveLimits {
-                        download: state.server.max_download_bytes,
-                        expanded: state.server.max_expanded_bytes,
-                        file: state.config.max_file_bytes,
-                        entries: state.server.max_archive_entries,
-                    };
-                    docling::process(
-                        &state.config,
-                        &state.http,
-                        &state.server.docling_url,
-                        limits,
-                        &task_id,
-                        batch,
-                    )
-                    .await;
-                });
-            }
-            Err(_) => docling::log_result(&task_id, None, false),
+    payload: Result<Json<Selection>, JsonRejection>,
+) -> Result<Json<BatchResult>, ApiError> {
+    let Json(selection) =
+        payload.map_err(|_| ApiError(StatusCode::BAD_REQUEST, "Selección JSON inválida".into()))?;
+    let _permit = state
+        .ingestions
+        .reserve()
+        .map_err(|e| ApiError(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+    let keys = state
+        .ingestions
+        .select(selection)
+        .await
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    // Rejected-only batches need no conversion or vector service access.
+    if keys
+        .iter()
+        .any(|key| crate::docling::input_format(key).is_some())
+    {
+        let incompatibility = state
+            .ingestions
+            .check_index()
+            .await
+            .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+        if let Some(message) = incompatibility {
+            return Err(ApiError(StatusCode::CONFLICT, message));
         }
     }
-    Ok(Json(json!({"status": "ack"})))
+    Ok(Json(state.ingestions.run(keys).await))
 }
