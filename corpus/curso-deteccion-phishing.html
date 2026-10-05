@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Curso interno de ACME: detección de phishing en correo, enlaces, adjuntos y códigos QR. Presentación de diez diapositivas con ejercicios.">
+  <title>ACME · Curso de detección de phishing</title>
+  <style>
+    :root { color-scheme: dark; --bg:#101820; --panel:#172630; --ink:#edf3f3; --muted:#b3c2ca; --teal:#83e0ce; --orange:#ffbf86; --line:#354954; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:17px/1.55 system-ui,sans-serif; }
+    button { font:inherit; cursor:pointer; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink); padding:9px 15px; }
+    button:hover { border-color:var(--teal); }
+    button:disabled { cursor:default; opacity:.4; }
+    :focus-visible { outline:3px solid var(--teal); outline-offset:4px; }
+    header { max-width:1280px; margin:auto; padding:22px 36px; display:flex; justify-content:space-between; align-items:center; gap:20px; }
+    .brand { font-weight:800; letter-spacing:.14em; color:var(--teal); }
+    .series { color:var(--muted); font-size:13px; }
+    main { max-width:1280px; margin:auto; padding:0 36px 24px; }
+    .slide { min-height:650px; padding:44px 52px; margin-bottom:24px; border:1px solid var(--line); border-radius:18px; background:linear-gradient(135deg,#192c35,#142029); display:flex; flex-direction:column; }
+    .presenting .slide { display:none; }
+    .presenting .slide.active { display:flex; }
+    .eyebrow { margin:0 0 18px; color:var(--teal); letter-spacing:.13em; text-transform:uppercase; font-size:12px; font-weight:700; }
+    h1,h2,h3,p { margin-top:0; }
+    h1 { font-size:clamp(44px,6vw,78px); line-height:1.05; max-width:850px; letter-spacing:-.045em; margin-bottom:26px; }
+    h2 { font-size:clamp(30px,4vw,47px); line-height:1.15; letter-spacing:-.025em; margin-bottom:18px; }
+    h3 { font-size:20px; margin-bottom:9px; }
+    .lead { color:var(--muted); font-size:21px; max-width:850px; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; margin:18px 0; }
+    .grid.three { grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .card { padding:22px; background:#101c24; border:1px solid var(--line); border-radius:12px; }
+    .card p:last-child { margin-bottom:0; }
+    .number { color:var(--teal); font-size:30px; font-weight:800; display:block; margin-bottom:8px; }
+    .accent { color:var(--teal); }
+    .warning { border-left:4px solid var(--orange); background:#26272a; padding:16px 20px; margin:20px 0; }
+    .warning strong { color:var(--orange); }
+    .pill { display:inline-block; padding:7px 13px; border:1px solid var(--line); border-radius:30px; margin:0 8px 8px 0; font-size:14px; }
+    code { font:15px/1.7 ui-monospace,monospace; overflow-wrap:anywhere; color:var(--teal); }
+    .email { background:#f3f5f6; color:#25343e; padding:25px 30px; border-radius:12px; margin:18px 0; }
+    .email code { color:#17595b; }
+    .email hr { border:0; border-top:1px solid #cbd3d8; margin:18px 0; }
+    .email .fake-link { display:inline-block; background:#174b50; color:white; border-radius:6px; padding:9px 16px; font-weight:650; }
+    ul,ol { padding-left:25px; }
+    li { margin:9px 0; }
+    details { margin-top:18px; padding:13px 16px; border:1px dashed var(--line); border-radius:8px; font-size:14px; color:var(--muted); }
+    summary { cursor:pointer; color:var(--teal); }
+    details p { margin:12px 0 0; }
+    .slide-footer { margin-top:auto; padding-top:24px; color:var(--muted); font-size:12px; display:flex; justify-content:space-between; gap:20px; }
+    .controls { max-width:1280px; margin:auto; padding:0 36px 18px; display:none; align-items:center; justify-content:space-between; gap:12px; }
+    .presenting .controls { display:flex; }
+    .counter { color:var(--muted); font-size:14px; }
+    .progress { height:3px; background:#31434e; }
+    .progress span { display:block; height:100%; width:10%; background:var(--teal); transition:width .15s; }
+    .hint { text-align:center; font-size:12px; color:var(--muted); padding:12px 20px; margin:0; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; }
+    fieldset { padding:0; border:0; margin:18px 0; }
+    legend { font-weight:700; font-size:19px; margin-bottom:12px; }
+    label { display:block; padding:12px 16px; border:1px solid var(--line); border-radius:8px; margin:9px 0; cursor:pointer; }
+    input { margin-right:10px; accent-color:var(--teal); }
+    .feedback { min-height:52px; padding:14px 0; color:var(--teal); }
+    dialog { background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:16px; max-width:700px; width:calc(100% - 32px); max-height:85vh; padding:28px; }
+    dialog::backdrop { background:#000b; }
+    .outline { display:grid; gap:8px; margin:20px 0; }
+    .outline button { text-align:left; }
+    .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+    @media(max-width:760px) {
+      header { padding:18px; align-items:flex-start; }
+      .series { max-width:150px; text-align:right; }
+      main { padding:0 12px 16px; }
+      .slide { padding:28px 22px; min-height:650px; }
+      .grid,.grid.three { grid-template-columns:1fr; }
+      .lead { font-size:18px; }
+      .controls { padding:0 14px 18px; flex-wrap:wrap; }
+      .email { padding:18px; }
+    }
+    @media(prefers-reduced-motion:reduce) { .progress span { transition:none; } }
+    @media print {
+      :root { color-scheme:light; }
+      @page { size:A4 landscape; margin:12mm; }
+      body { background:white; color:#172630; font-size:12px; }
+      header,.controls,.progress,.hint,dialog,.sr-only { display:none!important; }
+      main { max-width:none; padding:0; }
+      .slide,.presenting .slide { display:flex!important; background:white; color:#172630; border:0; padding:8px; min-height:165mm; margin:0; break-after:page; }
+      .slide:last-child { break-after:auto; }
+      h1 { font-size:47px; } h2 { font-size:32px; } h3 { font-size:16px; }
+      .lead { font-size:16px; color:#354954; }
+      .card,.warning,.email { background:#f3f5f6; color:#172630; padding:14px; }
+      .accent,.eyebrow,code,.number,.feedback { color:#145c59; }
+      .slide-footer { color:#354954; }
+      details { display:none; }
+      button { display:none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="brand">ACME / TI</span>
+    <span class="series">Formación interna · Octubre 2026<br>Empresa ficticia · Curso de 40 minutos</span>
+  </header>
+  <main id="deck" aria-label="Presentación del curso">
+    <section class="slide active" id="diapositiva-1" aria-labelledby="titulo-1">
+      <p class="eyebrow">01 / Apertura · 2 minutos</p>
+      <h1 id="titulo-1">Una pausa antes<br>del <span class="accent">clic.</span></h1>
+      <p class="lead">Detección de phishing en mensajes de trabajo: reconoce la suplantación y verifica lo que te piden antes de actuar.</p>
+      <div><span class="pill">Correo</span><span class="pill">Mensajería</span><span class="pill">Adjuntos</span><span class="pill">Códigos QR</span></div>
+      <div class="grid">
+        <div class="card"><h3>Al terminar podrás</h3><p>Identificar señales de engaño, revisar el dominio de un enlace y elegir una verificación independiente.</p></div>
+        <div class="card"><h3>Para quién</h3><p>Personal que recibe comunicaciones de compañeros, clientes o proveedores. No se requieren conocimientos técnicos.</p></div>
+      </div>
+      <details><summary>Notas del instructor</summary><p>Preguntar: «¿Alguna vez un mensaje urgente te hizo actuar sin revisar?». Escuchar dos ejemplos sin pedir datos reales de los participantes.</p></details>
+      <div class="slide-footer"><span>Curso: Detección de phishing</span><span>01 / 10</span></div>
+    </section>
+    <section class="slide" id="diapositiva-2" aria-labelledby="titulo-2">
+      <p class="eyebrow">02 / Reconocer · 4 minutos</p>
+      <h2 id="titulo-2">La petición revela el engaño.</h2>
+      <p class="lead">El phishing suplanta una identidad para inducirte a abrir contenido, entregar información o realizar una acción que beneficia al atacante.</p>
+      <div class="grid">
+        <div class="card"><h3>Presión</h3><p>«Hazlo en diez minutos», «tu servicio será cancelado» o una supuesta instrucción secreta de Dirección.</p></div>
+        <div class="card"><h3>Cambio inesperado</h3><p>Un contacto habitual pide usar una nueva dirección, otro medio de pago o un canal desconocido.</p></div>
+        <div class="card"><h3>Identidad incoherente</h3><p>El nombre visible parece conocido, pero la dirección real o el destino del enlace no corresponde.</p></div>
+        <div class="card"><h3>Contenido fuera de contexto</h3><p>Recibes un documento que no esperabas o una notificación sobre un trámite que no iniciaste.</p></div>
+      </div>
+      <div class="warning"><strong>Una buena redacción no garantiza autenticidad.</strong> Un mensaje fraudulento puede copiar el estilo y los logotipos de una organización.</div>
+      <details><summary>Notas del instructor</summary><p>Pedir que distingan una señal de alerta de una prueba concluyente. La urgencia invita a verificar; no demuestra por sí sola que exista fraude.</p></details>
+      <div class="slide-footer"><span>Objetivo: detectar señales en contexto</span><span>02 / 10</span></div>
+    </section>
+    <section class="slide" id="diapositiva-3" aria-labelledby="titulo-3">
+      <p class="eyebrow">03 / Identidad · 4 minutos</p>
+      <h2 id="titulo-3">Lee la dirección completa.</h2>
+      <div class="grid">
+        <div class="card"><h3>Nombre visible</h3><p>«Administración ACME» es una etiqueta que el remitente puede elegir. Revisa también la dirección y, cuando esté disponible, el campo «Responder a».</p></div>
+        <div class="card"><h3>Dominio real</h3><p>En una dirección de correo, el dominio aparece después de <code>@</code>. Una palabra parecida al nombre de la empresa no acredita la identidad.</p></div>
+      </div>
+      <div class="email"><p><strong>Dirección esperada en el ejercicio</strong><br><code>notificaciones@acme.example</code></p><p><strong>Dirección recibida</strong><br><code>notificaciones@acme-validacion.example</code></p><p>Son dominios diferentes. Verifica con el contacto por un canal que ya conocías.</p></div>
+      <p>Una dirección aparentemente correcta tampoco basta: una cuenta legítima puede estar comprometida. Evalúa también el contexto de la petición.</p>
+      <details><summary>Notas del instructor</summary><p>Todos los dominios del curso son ficticios. Pedir que lean en voz alta la parte situada después de la arroba, sin enviar mensajes ni abrir sitios.</p></details>
+      <div class="slide-footer"><span>Actividad: comparar dos remitentes</span><span>03 / 10</span></div>
+    </section>
+    <section class="slide" id="diapositiva-4" aria-labelledby="titulo-4">
+      <p class="eyebrow">04 / Enlaces · 5 minutos</p>
+      <h2 id="titulo-4">El texto visible puede ocultar otro destino.</h2>
+      <p class="lead">En un equipo de escritorio, sitúa el puntero sobre el enlace para revisar su destino sin abrirlo. En un móvil, utiliza la vista previa cuando la aplicación la permita.</p>
+      <div class="email"><p><strong>Texto del mensaje:</strong> «Abrir portal ACME»</p><p><strong>Destino:</strong><br><code>https://acme.example.validacion.example/revision</code></p><hr><p>El dominio registrado del ejemplo es <strong>validacion.example</strong>. Las palabras anteriores son subdominios; no convierten el destino en <code>acme.example</code>.</p></div>
+      <div class="grid">
+        <div class="card"><h3>Acortadores</h3><p>Ocultan el destino. Si el mensaje es inesperado, verifica la solicitud antes de seguir el enlace.</p></div>
+        <div class="card"><h3>Candado y HTTPS</h3><p>Indican una conexión cifrada, pero un sitio fraudulento también puede utilizarlos.</p></div>
+      </div>
+      <details><summary>Notas del instructor</summary><p>El ejemplo termina en .example y no es un enlace activo. Señalar que leer dominios requiere atención: no basta con encontrar «ACME» en cualquier parte de la dirección.</p></details>
+      <div class="slide-footer"><span>Actividad: identificar el destino real</span><span>04 / 10</span></div>
+    </section>
+    <section class="slide" id="diapositiva-5" aria-labelledby="titulo-5">
+      <p class="eyebrow">05 / Adjuntos · 5 minutos</p>
+      <h2 id="titulo-5">¿Esperabas recibir ese archivo?</h2>
+      <div class="grid three">
+        <div class="card"><span class="number">01</span><h3>Comprueba el contexto</h3><p>Confirma que participas en el trámite y que el remitente debía enviar ese contenido.</p></div>
+        <div class="card"><span class="number">02</span><h3>Observa la extensión</h3><p><code>factura.pdf.exe</code> termina en <code>.exe</code>: el nombre no lo convierte en un PDF.</p></div>
+        <div class="card"><span class="number">03</span><h3>Cuestiona la instrucción</h3><p>Una petición inesperada de activar macros o ejecutar un instalador para leer una factura requiere verificación.</p></div>
+      </div>
+      <div class="warning"><strong>El formato no garantiza seguridad.</strong> Un PDF puede contener enlaces engañosos y un archivo comprimido puede ocultar otros archivos.</div>
+      <p>No abras un adjunto sospechoso para averiguar si es peligroso. Confirma primero su procedencia con el contacto habitual.</p>
+      <details><summary>Notas del instructor</summary><p>Mostrar solo los nombres escritos. No distribuir ejecutables, macros ni muestras reales. Preguntar qué cambia al mostrar las extensiones completas.</p></details>
+      <div class="slide-footer"><span>Actividad: leer el nombre completo</span><span>05 / 10</span></div>
+    </section>
+    <section class="slide" id="diapositiva-6" aria-labelledby="titulo-6">
+      <p class="eyebrow">06 / Mensajería y QR · 5 minutos</p>
+      <h2 id="titulo-6">Cambiar de canal no prueba la identidad.</h2>
+      <div class="grid">
+        <div class="card"><h3>Un mensaje del «director»</h3><p>Un número nuevo solicita una transferencia urgente y pide no llamar. Verifica con el número que ya tenías registrado.</p></div>
+        <div class="card"><h3>Un código QR inesperado</h3><p>Un QR en una supuesta notificación lleva a una página externa. Revisa la dirección que muestra la cámara antes de abrirla.</p></div>
+        <div class="card"><h3>Un aviso de entrega</h3><p>Un mensaje pide pagar un cargo para liberar un paquete. Consulta el envío desde el canal habitual del servicio.</p></div>
+        <div class="card"><h3>Una conversación conocida</h3><p>Un atacante puede aprovechar un hilo real. Comprueba cualquier cambio inusual de destino o de instrucciones.</p></div>
+      </div>
+      <p>Si no puedes previsualizar el destino de un QR, no lo abras por curiosidad. Consulta la información mediante un acceso que ya conozcas.</p>
+      <details><summary>Notas del instructor</summary><p>No hay códigos QR reales en la actividad. Pedir una propuesta de verificación para cada escenario sin usar los datos de contacto incluidos en el mensaje sospechoso.</p></details>
+      <div class="slide-footer"><span>Actividad: elegir un canal independiente</span><span>06 / 10</span></div>
+    </section>
+    <section class="slide" id="diapositiva-7" aria-labelledby="titulo-7">
+      <p class="eyebrow">07 / Decisión · 4 minutos</p>
+      <h2 id="titulo-7">Detén la acción y verifica.</h2>
+      <div class="grid three">
+        <div class="card"><span class="number">1</span><h3>Pausa</h3><p>No respondas ni sigas los enlaces o adjuntos del mensaje sospechoso.</p></div>
+        <div class="card"><span class="number">2</span><h3>Confirma</h3><p>Contacta al supuesto remitente mediante un número o una dirección que ya conocías, o abre el servicio desde tu acceso habitual.</p></div>
+        <div class="card"><span class="number">3</span><h3>Marca el mensaje</h3><p>Utiliza «Reportar phishing» cuando esté disponible en el correo. Evita reenviar el contenido a compañeros para que lo prueben.</p></div>
+      </div>
+      <div class="warning"><strong>No uses «Cancelar suscripción» en un mensaje sospechoso.</strong> Ese enlace también puede llevar a una página engañosa.</div>
+      <details><summary>Notas del instructor</summary><p>Esta actividad enseña a decidir frente a un mensaje; no establece tiempos de atención técnica ni un procedimiento de recuperación de servicios.</p></details>
+      <div class="slide-footer"><span>Objetivo: actuar sin interactuar con el engaño</span><span>07 / 10</span></div>
+    </section>
+    <section class="slide" id="diapositiva-8" aria-labelledby="titulo-8">
+      <p class="eyebrow">08 / Caso práctico · 4 minutos</p>
+      <h2 id="titulo-8">Encuentra tres señales.</h2>
+      <div class="email">
+        <p><strong>De:</strong> Administración ACME &lt;avisos@acme-validacion.example&gt;<br><strong>Asunto:</strong> Último aviso: revisa tu buzón ahora</p>
+        <hr>
+        <p>Tu buzón quedará suspendido en diez minutos. Abre la revisión pendiente para evitar perder los mensajes de tus clientes. No contactes a tu supervisor; esta validación es confidencial.</p>
+        <span class="fake-link">Revisar buzón</span>
+        <p><code>https://acme.example.validacion.example/buzon</code></p>
+      </div>
+      <p>Explica qué verificarías y qué canal utilizarías. El botón y la dirección son ejemplos de clase y no realizan ninguna acción.</p>
+      <details><summary>Respuesta del ejercicio</summary><p>Señales: el remitente usa un dominio diferente, la urgencia presiona y la instrucción de guardar secreto impide la verificación. El enlace tampoco apunta al dominio esperado. Una decisión adecuada es no abrirlo y confirmar con Administración por un contacto conocido.</p></details>
+      <div class="slide-footer"><span>Actividad: trabajo en parejas</span><span>08 / 10</span></div>
+    </section>
+    <section class="slide" id="diapositiva-9" aria-labelledby="titulo-9">
+      <p class="eyebrow">09 / Evaluación · 5 minutos</p>
+      <h2 id="titulo-9">¿Cuál es la mejor siguiente acción?</h2>
+      <p>Un proveedor habitual envía desde una dirección nueva un mensaje con instrucciones para pagar a otra cuenta. La redacción es correcta y el mensaje incluye su logotipo.</p>
+      <form id="quiz">
+        <fieldset>
+          <legend>Elige una respuesta</legend>
+          <label><input type="radio" name="decision" value="logo" required> Realizar el pago porque el logotipo coincide.</label>
+          <label><input type="radio" name="decision" value="reply"> Responder al mismo mensaje y preguntar si es auténtico.</label>
+          <label><input type="radio" name="decision" value="verify"> Confirmar el cambio con el proveedor por un contacto previamente conocido.</label>
+        </fieldset>
+        <button type="submit">Comprobar respuesta</button>
+        <p class="feedback" id="feedback" role="status" aria-live="polite"></p>
+      </form>
+      <details><summary>Criterio de evaluación</summary><p>La tercera opción verifica por un canal independiente. El logotipo se puede copiar y responder al mensaje puede llevar de nuevo al atacante. La evaluación es práctica y no envía ni almacena datos de los participantes.</p></details>
+      <div class="slide-footer"><span>Actividad: decisión individual y discusión</span><span>09 / 10</span></div>
+    </section>
+    <section class="slide" id="diapositiva-10" aria-labelledby="titulo-10">
+      <p class="eyebrow">10 / Cierre · 2 minutos</p>
+      <h2 id="titulo-10">Tu criterio es la última comprobación.</h2>
+      <p class="lead">Antes de actuar, considera la identidad, el destino y el contexto de la petición.</p>
+      <div class="grid three">
+        <div class="card"><h3>Identidad</h3><p>¿La persona y la dirección corresponden a lo que esperaba?</p></div>
+        <div class="card"><h3>Destino</h3><p>¿Sé a dónde lleva el enlace o qué archivo estoy recibiendo?</p></div>
+        <div class="card"><h3>Contexto</h3><p>¿El trámite existe y la acción tiene sentido en mi trabajo?</p></div>
+      </div>
+      <div class="warning"><strong>Compromiso de la sesión:</strong> ante una petición inesperada, haré una verificación independiente antes de actuar.</div>
+      <details><summary>Notas del instructor</summary><p>Solicitar que cada participante describa una señal que revisará en su siguiente mensaje de trabajo. Cerrar después de resolver dudas sobre los casos prácticos.</p></details>
+      <div class="slide-footer"><span>Fin del curso · Material y ejemplos ficticios de ACME</span><span>10 / 10</span></div>
+    </section>
+  </main>
+  <nav class="controls" aria-label="Controles de presentación">
+    <div class="actions"><button type="button" id="previous" aria-label="Diapositiva anterior">← Anterior</button><button type="button" id="next" aria-label="Diapositiva siguiente">Siguiente →</button></div>
+    <span class="counter" id="counter">1 / 10</span>
+    <div class="actions"><button type="button" id="index">Índice</button><button type="button" id="fullscreen">Pantalla completa</button><button type="button" id="print">Imprimir</button></div>
+  </nav>
+  <div class="progress" aria-hidden="true"><span id="progress"></span></div>
+  <p class="hint">Navega con ← y → · Inicio y Fin · Esc sale de pantalla completa</p>
+  <p class="sr-only" id="announcement" role="status" aria-live="polite"></p>
+  <dialog id="outline-dialog" aria-labelledby="outline-title">
+    <h2 id="outline-title">Índice del curso</h2>
+    <div class="outline" id="outline"></div>
+    <form method="dialog"><button>Cerrar índice</button></form>
+  </dialog>
+  <script>
+    (() => {
+      const slides = Array.from(document.querySelectorAll('.slide'));
+      const previous = document.getElementById('previous');
+      const next = document.getElementById('next');
+      const dialog = document.getElementById('outline-dialog');
+      const fullscreen = document.getElementById('fullscreen');
+      let current = 0;
+      document.body.classList.add('presenting');
+      function show(index, updateHash = true) {
+        current = Math.max(0, Math.min(slides.length - 1, index));
+        slides.forEach((slide, i) => slide.classList.toggle('active', i === current));
+        previous.disabled = current === 0;
+        next.disabled = current === slides.length - 1;
+        document.getElementById('counter').textContent = `${current + 1} / ${slides.length}`;
+        document.getElementById('progress').style.width = `${(current + 1) / slides.length * 100}%`;
+        const title = slides[current].querySelector('h1,h2').textContent;
+        document.getElementById('announcement').textContent = `Diapositiva ${current + 1} de ${slides.length}: ${title}`;
+        if (updateHash) history.replaceState(null, '', `#${slides[current].id}`);
+      }
+      function readHash() {
+        const index = slides.findIndex(slide => `#${slide.id}` === location.hash);
+        show(index < 0 ? 0 : index, false);
+      }
+      previous.addEventListener('click', () => show(current - 1));
+      next.addEventListener('click', () => show(current + 1));
+      window.addEventListener('hashchange', readHash);
+      document.addEventListener('keydown', event => {
+        if (dialog.open || event.ctrlKey || event.altKey || event.metaKey) return;
+        if (event.target.closest('input,textarea,select,button,summary')) return;
+        const actions = {ArrowLeft: current - 1, ArrowRight: current + 1, Home: 0, End: slides.length - 1};
+        if (Object.hasOwn(actions, event.key)) { event.preventDefault(); show(actions[event.key]); }
+      });
+      slides.forEach((slide, i) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = `${String(i + 1).padStart(2, '0')} · ${slide.querySelector('h1,h2').textContent}`;
+        button.addEventListener('click', () => { show(i); dialog.close(); });
+        document.getElementById('outline').append(button);
+      });
+      document.getElementById('index').addEventListener('click', () => dialog.showModal());
+      if (!document.fullscreenEnabled) fullscreen.hidden = true;
+      fullscreen.addEventListener('click', async () => {
+        try {
+          if (document.fullscreenElement) await document.exitFullscreen();
+          else await document.documentElement.requestFullscreen();
+        } catch {
+          document.getElementById('announcement').textContent = 'El navegador no permite activar la pantalla completa.';
+        }
+      });
+      document.addEventListener('fullscreenchange', () => { fullscreen.textContent = document.fullscreenElement ? 'Salir de pantalla completa' : 'Pantalla completa'; });
+      document.getElementById('print').addEventListener('click', () => window.print());
+      document.getElementById('quiz').addEventListener('submit', event => {
+        event.preventDefault();
+        const value = new FormData(event.currentTarget).get('decision');
+        const messages = {
+          logo: 'Revisa tu elección: un logotipo se puede copiar. Confirma el cambio con el contacto que ya conocías.',
+          reply: 'Revisa tu elección: responder puede llevarte al mismo atacante. Utiliza un contacto previamente conocido.',
+          verify: 'Correcto. La verificación independiente permite confirmar el cambio sin depender del mensaje sospechoso.'
+        };
+        document.getElementById('feedback').textContent = messages[value] || 'Selecciona una respuesta.';
+      });
+      readHash();
+    })();
+  </script>
+</body>
+</html>

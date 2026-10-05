@@ -28,9 +28,13 @@ impl Client {
         })
     }
 
-    pub(crate) fn profile(&self, config: &Config) -> Value {
+    fn force_ocr(&self, filename: &str) -> bool {
+        self.server.do_ocr && super::input_format(filename) == Some("image")
+    }
+
+    pub(crate) fn profile(&self, config: &Config, filename: &str) -> Value {
         json!({
-            "version": 4, "docling_serve": "1.36.0",
+            "version": 5, "docling_serve": "1.36.0",
             "chunker": "hybrid", "tokenizer": config.embedding_model,
             "embedding_revision": config.embedding_revision,
             "max_tokens": config.chunk_target_tokens, "merge_peers": true,
@@ -38,7 +42,7 @@ impl Client {
             "image_export_mode": self.server.image_export_mode,
             "do_ocr": self.server.do_ocr,
             "ocr_preset": if self.server.do_ocr { Some(&self.server.ocr_preset) } else { None },
-            "force_ocr": false, "do_table_structure": true, "table_mode": "accurate",
+            "force_ocr": self.force_ocr(filename), "do_table_structure": true, "table_mode": "accurate",
             "do_pdf_heading_hierarchy": true, "do_picture_description": false,
             "include_images": self.server.image_export_mode != "placeholder", "include_page_images": false,
             "recovery": "docling-json-half-budget-max-3-v1", "token_validation": "tei-special-tokens-v1"
@@ -97,7 +101,7 @@ impl Client {
                 )
                 .text("include_page_images", "false")
                 .text("do_ocr", self.server.do_ocr.to_string())
-                .text("force_ocr", "false")
+                .text("force_ocr", self.force_ocr(filename).to_string())
                 .text("do_table_structure", "true")
                 .text("table_mode", "accurate")
                 .text("do_pdf_heading_hierarchy", "true")

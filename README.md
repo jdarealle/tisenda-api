@@ -147,11 +147,13 @@ Docling es el único responsable de crear los chunks. La API solicita JSON estru
 | Variable | Predeterminado | Comportamiento |
 |---|---|---|
 | `DOCLING_IMAGE_EXPORT_MODE` | `referenced` | `referenced`: recursos del ZIP; `embedded`: imágenes dentro del JSON; `placeholder`: estructura sin datos de imagen. |
-| `DOCLING_DO_OCR` | `true` | Habilita o deshabilita OCR, independientemente del modo de imágenes. |
+| `DOCLING_DO_OCR` | `true` | Habilita o deshabilita OCR, independientemente del modo de imágenes. Cuando está habilitado, la conversión de archivos de imagen fuerza OCR de página completa. |
 | `DOCLING_OCR_PRESET` | `auto` | Preset enviado cuando OCR está habilitado; debe estar disponible en Docling. |
 | `CHUNK_TARGET_TOKENS` | `512` | Objetivo solicitado a HybridChunker. |
 
 La conversión mantiene deshabilitadas la descripción de imágenes, clasificación visual y extracción de gráficos mediante modelos.
+
+Para originales JPG, JPEG, PNG, TIFF, BMP y WebP, la API envía `force_ocr=true` cuando `DOCLING_DO_OCR=true`. El perfil de cada documento registra el valor efectivo. El OCR permite extraer texto de una imagen; la fotografía sin texto no se convierte en una descripción visual. Si Docling devuelve cero chunks, el documento falla antes de generar embeddings o escribir en Qdrant.
 
 La API consulta la capacidad real de TEI y cuenta el texto final con su tokenizador, incluyendo tokens especiales. Los embeddings se generan con `truncate=false`. Si un chunk excede la capacidad, Docling vuelve a fragmentar el JSON temporal con la mitad del presupuesto: hasta tres ajustes, deteniéndose si repite el resultado incompatible. Un exceso no resuelto falla el documento.
 

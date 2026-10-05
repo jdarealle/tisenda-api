@@ -68,7 +68,8 @@ impl Manager {
         for key in keys {
             // select() has already validated UTF-8, relative paths and basenames.
             let filename = key.rsplit('/').next().unwrap_or(&key).to_owned();
-            let mut report = FileReport::new(filename, key, self.client.profile(&self.config));
+            let profile = self.client.profile(&self.config, &filename);
+            let mut report = FileReport::new(filename, key, profile);
             if docling::input_format(&report.filename).is_none() {
                 report.reject();
             } else if let Err(error) = self.process(&mut report).await {

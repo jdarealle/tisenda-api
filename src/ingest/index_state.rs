@@ -48,7 +48,7 @@ pub(super) fn pipeline_version(config: &Config, identity: &ModelIdentity) -> Str
     // Actualizar las versiones al cambiar la extracción o la fragmentación.
     let processing = serde_json::json!({
         "schema": 4,
-        "extractor": "docling-serve-1.36.0-chunks-jsonl-zip-v1",
+        "extractor": "docling-serve-1.36.0-chunks-jsonl-zip-v2-image-full-page-ocr",
         "chunker": "docling-hybrid-contextualized-v1",
         "target": config.chunk_target_tokens,
         "validation": "tei-tokenize-special-tokens-v1",
