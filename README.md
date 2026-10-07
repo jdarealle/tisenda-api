@@ -1,5 +1,7 @@
 # Tisenda API
 
+El proyecto está orientado a resolver rápidamente las preguntas que los distintos departamentos dirigen al área de IT, utilizando la documentación interna como fuente. Por ejemplo, permite consultar qué consumible necesita una impresora y cómo sustituirlo, para facilitar la atención de dudas frecuentes.
+
 API HTTP y biblioteca Rust para consultar documentos mediante generación aumentada por recuperación (RAG). Procesa archivos de una carpeta local, crea un índice vectorial y responde preguntas con referencias a los originales.
 
 Admite PDF, documentos de Office OOXML, HTML, Markdown, texto, CSV, AsciiDoc, imágenes y subtítulos VTT. El catálogo de extensiones está definido en [src/docling/formats.rs](src/docling/formats.rs).
