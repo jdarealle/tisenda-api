@@ -14,6 +14,7 @@ qdrant-client = { version = "1.19", default-features = false, features = ["serde
 reqwest = { version = "0.13.5", features = ["json", "rustls", "stream", "multipart"], default-features = false }
 rig = { version = "0.42", default-features = false, features = ["derive", "reqwest", "rustls"] }
 rig-qdrant = "0.42"
+scalar_api_reference = "0.2.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -24,6 +25,7 @@ tonic = { version = "0.14", features = ["transport"] }
 tonic-prost = "0.14"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+utoipa = "5.5.0"
 uuid = { version = "1", features = ["v4", "v5"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 

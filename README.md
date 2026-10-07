@@ -59,6 +59,8 @@ cargo run --locked
 | Servicio | Interfaz local |
 |---|---|
 | API | `http://127.0.0.1:3000/health` |
+| Referencia Scalar | `http://127.0.0.1:3000/docs` |
+| Esquema OpenAPI | `http://127.0.0.1:3000/openapi.json` |
 | Docling | `http://127.0.0.1:5001/ui` |
 | Qdrant | `http://127.0.0.1:6333/dashboard` |
 
@@ -71,6 +73,29 @@ Las solicitudes utilizan JSON y admiten cuerpos de hasta 256 KiB.
 | `GET` | `/health` | Devuelve `{"status":"ok"}`; comprueba que la API responde. |
 | `POST` | `/ingestions` | Procesa una selección de originales y devuelve el resultado al terminar. |
 | `POST` | `/query` | Responde una pregunta con fuentes del índice. |
+
+### Documentación interactiva
+
+`GET /docs` sirve la referencia interactiva de Scalar y `GET /openapi.json` devuelve
+la especificación OpenAPI 3.1 de los tres endpoints. Ambas rutas están siempre
+habilitadas. Scalar permite ejecutar solicitudes contra la API que sirve la
+documentación; las ingestas ejecutadas desde la interfaz procesan los originales
+igual que cualquier otra solicitud.
+
+El esquema se genera desde los handlers y los tipos Rust con
+[`utoipa`](https://docs.rs/utoipa/5.5.0/utoipa/). El HTML se genera con
+`scalar_html_default` del crate oficial
+[`scalar_api_reference`](https://scalar.com/products/api-references/integrations/rust),
+usando la API independiente del framework sobre Axum. El navegador necesita acceso
+a `https://cdn.jsdelivr.net/npm/@scalar/api-reference` para cargar JavaScript.
+Scalar Agent está deshabilitado. El esquema y el HTML se construyen una vez al
+crear el router; servirlos no consulta Docling, TEI, Qdrant ni OpenAI.
+
+Para documentar un nuevo endpoint, anotar su handler con `#[utoipa::path]`,
+registrarlo en `ApiDoc` dentro del módulo HTTP y derivar `utoipa::ToSchema` en sus
+tipos de entrada y salida. Documentar los estados que realmente devuelve el
+handler y preservar las reglas de Serde sobre campos desconocidos, omitidos y
+anulables.
 
 ### Ingesta
 

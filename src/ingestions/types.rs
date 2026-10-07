@@ -1,14 +1,17 @@
 use crate::docling::FileReport;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Selection {
+    /// Archivos o carpetas relativos a DOCUMENTS_ROOT; omitido o vacío selecciona toda la raíz.
     #[serde(default)]
     pub(super) paths: Vec<String>,
 }
 
-#[derive(Default, Serialize)]
+/// Contadores de estados excluyentes de los documentos del lote.
+#[derive(Default, Serialize, ToSchema)]
 struct Counts {
     total: usize,
     completed: usize,
@@ -17,7 +20,8 @@ struct Counts {
     failed: usize,
 }
 
-#[derive(Serialize)]
+/// Resultado final del lote; un HTTP 200 puede incluir documentos rechazados o fallidos.
+#[derive(Serialize, ToSchema)]
 pub(crate) struct BatchResult {
     counts: Counts,
     pub(super) documents: Vec<FileReport>,

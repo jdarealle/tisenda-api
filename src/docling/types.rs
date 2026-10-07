@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use utoipa::ToSchema;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ArchiveLimits {
@@ -9,23 +10,30 @@ pub(crate) struct ArchiveLimits {
     pub(crate) entries: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub(crate) struct FileError {
+    /// unsupported_extension o processing_failed.
     pub(crate) code: String,
     pub(crate) message: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub(crate) struct FileReport {
     pub(crate) filename: String,
     pub(crate) source_key: String,
+    /// Estado final: completed, completed_with_warnings, rejected o failed.
     pub(crate) status: String,
+    /// Etapa: validation, snapshot, conversion, download, tokens, rechunk, index o done.
     pub(crate) stage: String,
+    #[schema(required = true)]
     pub(crate) original_sha256: Option<String>,
     pub(crate) task_ids: Vec<String>,
+    /// Fragmentos preparados; solo un estado completed o completed_with_warnings confirma su indexación.
     pub(crate) chunks: usize,
     pub(crate) warnings: Vec<String>,
+    #[schema(required = true)]
     pub(crate) error: Option<FileError>,
+    /// Perfil de procesamiento expresado como JSON libre.
     pub(crate) profile: Value,
 }
 
