@@ -8,7 +8,7 @@ mod qdrant;
 mod server;
 mod tei;
 
-pub use answer::{Answer, AnswerRequest, Source, answer};
+pub use answer::{Answer, AnswerRequest, Source, SourceLocation, answer};
 pub use config::Config;
 pub use documents::DoclingChunk;
 pub use ingest::{DocumentIngestResult, IngestDocument, IngestReport, ingest_documents};

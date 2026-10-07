@@ -39,7 +39,7 @@ Las variables están documentadas en [.env.example](.env.example). La API carga 
 | `EMBEDDING_MODEL`, `EMBEDDING_REVISION`, `EMBEDDING_DIMENSION` | Identidad del modelo, compatible con el servicio TEI y el índice. |
 | `DOCLING_URL` | Endpoint HTTP de Docling Serve. |
 | `OPENAI_MODEL`, `OPENAI_API_KEY` | Modelo y credenciales para generar respuestas. |
-| `TOP_K` | Cantidad predeterminada de fuentes; `5`. |
+| `TOP_K` | Máximo de fragmentos enviados al modelo, entre `1` y `50`; predeterminado `5`. |
 | `RUST_LOG` | Filtro de logs; predeterminado `rag=info`. |
 
 Las rutas relativas de `DOCUMENTS_ROOT` se resuelven desde el directorio de ejecución.
@@ -133,12 +133,45 @@ Los archivos sin extensión o fuera del catálogo reciben `status="rejected"`, `
 ```bash
 curl --fail-with-body http://127.0.0.1:3000/query \
   -H 'Content-Type: application/json' \
-  -d '{"question":"¿Qué consumible utiliza la impresora de recepción?","top_k":5}'
+  -d '{"question":"¿Qué consumible utiliza la impresora de recepción?"}'
 ```
 
-`question` debe contener texto. `top_k` admite de 1 a 50 y utiliza `TOP_K` cuando se omite. La respuesta contiene `text` y `sources`; cada fuente incluye `filename`, `source_key`, `headings`, `captions`, `page_numbers`, `doc_items`, `chunk_index`, `score`, `location_kind` y `provenance`.
+La solicitud admite únicamente `question`, que debe contener texto.
 
-Las páginas se devuelven para PDF. Otros formatos conservan el tipo de ubicación y la procedencia disponible en Docling. Cuando no hay evidencia suficiente, la respuesta indica esa ausencia y devuelve una lista de fuentes vacía.
+La selección utiliza exclusivamente `Config.top_k`, cargado desde `TOP_K` en el servidor: predeterminado `5`, rango `1`–`50`. La búsqueda solicita hasta `min(TOP_K × 2, 50)` candidatos y selecciona hasta `TOP_K` fragmentos mediante los filtros y el límite de contexto. Este valor no garantiza una cantidad de documentos distintos ni de citas; la respuesta puede citar menos fragmentos. La respuesta contiene `text` y `sources`:
+
+```json
+{
+  "text": "Apaga la impresora antes de sustituir el cartucho. [1]",
+  "sources": [
+    {
+      "id": "1",
+      "filename": "manual-impresora.pdf",
+      "source_key": "impresoras/manual-impresora.pdf",
+      "location": {
+        "kind": "page",
+        "page_numbers": [12],
+        "headings": ["Mantenimiento"]
+      },
+      "excerpt": "Apague la impresora antes de sustituir el cartucho."
+    }
+  ]
+}
+```
+
+Los marcadores `[n]` vinculan afirmaciones del texto con `sources[].id`. Cada fuente representa un fragmento; un documento puede tener varias referencias. Los identificadores son cadenas numéricas locales a la respuesta. `sources` contiene únicamente fragmentos citados, sin duplicados del mismo identificador y en orden de primera aparición. Los identificadores conservan su numeración original: una respuesta que cite `[3]` y `[1]` tendrá fuentes con esos identificadores en ese orden. Los consumidores deben resolver por `id`, no por posición en el arreglo.
+
+`filename` es el nombre visible; `source_key` identifica la ruta relativa del original. `excerpt` es el texto exacto del fragmento indexado enviado al modelo, incluido su contexto estructural; no es una cita textual seleccionada o reformulada por el modelo.
+
+`location.kind` describe la categoría del formato: `page`, `slide`, `sheet`, `section`, `image` o `document`. No garantiza una ubicación precisa. `page_numbers` se incluye únicamente para PDF con páginas conocidas; `headings`, cuando hay encabezados. Ambos campos se omiten si están ausentes o vacíos. No se inventan números de diapositiva, nombres de hoja ni enlaces al original.
+
+La API valida que una respuesta informativa tenga al menos una cita y que todos los marcadores correspondan a identificadores del contexto. Los corchetes se reservan para citas `[n]`, con enteros positivos sin espacios ni ceros iniciales; varias fuentes se escriben `[1][2]`. Ante una respuesta vacía, citas ausentes, marcadores inválidos o identificadores desconocidos, solicita una única corrección con la misma pregunta y contexto. Si falla nuevamente, devuelve HTTP `502` con `{"error":"No se pudo generar una respuesta con referencias válidas"}`. Los fallos del proveedor no se reintentan y devuelven el error genérico `{"error":"No se pudo generar la respuesta"}`.
+
+La validación comprueba sintaxis y existencia de referencias; no evalúa si cada afirmación está respaldada ni detecta todas las afirmaciones sin cita. Los logs registran el motivo de validación y el resultado de la corrección sin incluir el contenido documental.
+
+Cuando no hay fragmentos seleccionados, la API responde sin llamar al generador. Si el modelo determina que el contexto no basta, debe devolver la misma frase de insuficiencia, sin citas. En ambos casos la respuesta es `{"text":"No hay información suficiente en los documentos indexados para responder esa pregunta.","sources":[]}`.
+
+La biblioteca expone `AnswerRequest` para la pregunta y `Answer`, `Source` y `SourceLocation` para la respuesta y sus referencias.
 
 ## Conversión y límites
 

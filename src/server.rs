@@ -136,12 +136,10 @@ async fn query(
 ) -> Result<Json<crate::Answer>, ApiError> {
     let Json(request) = payload
         .map_err(|_| ApiError(StatusCode::BAD_REQUEST, "JSON de consulta inválido".into()))?;
-    if request.question.trim().is_empty()
-        || !(1..=50).contains(&request.top_k.unwrap_or(state.config.top_k))
-    {
+    if request.question.trim().is_empty() {
         return Err(ApiError(
             StatusCode::BAD_REQUEST,
-            "Pregunta vacía o top_k fuera de 1..50".into(),
+            "La pregunta no puede estar vacía".into(),
         ));
     }
     let client = qdrant::client(&state.config).map_err(|_| {
@@ -164,12 +162,19 @@ async fn query(
             "No hay índice activo".into(),
         ));
     }
-    answer(&state.config, request).await.map(Json).map_err(|_| {
-        ApiError(
-            StatusCode::BAD_GATEWAY,
-            "No se pudo generar la respuesta".into(),
-        )
-    })
+    answer(&state.config, request)
+        .await
+        .map(Json)
+        .map_err(query_error)
+}
+
+fn query_error(error: anyhow::Error) -> ApiError {
+    let message = if let Some(error) = error.downcast_ref::<crate::answer::CitationError>() {
+        error.to_string()
+    } else {
+        "No se pudo generar la respuesta".into()
+    };
+    ApiError(StatusCode::BAD_GATEWAY, message)
 }
 
 async fn ingest_batch(
