@@ -45,6 +45,7 @@ impl Config {
             chunk_target_tokens: {
                 if std::env::var_os("CHUNK_MAX_TOKENS").is_some() {
                     tracing::warn!(
+                        event = "deprecated_configuration",
                         "CHUNK_MAX_TOKENS está obsoleto; usa CHUNK_TARGET_TOKENS (objetivo, no límite de aceptación)"
                     );
                 }

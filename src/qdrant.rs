@@ -104,15 +104,18 @@ pub(crate) fn store(
 }
 
 pub(crate) async fn active_collection(client: &Qdrant, alias: &str) -> Result<Option<String>> {
-    let aliases = client
-        .list_aliases()
-        .await
-        .context("No se pudieron consultar los alias de Qdrant")?;
-    Ok(aliases
-        .aliases
-        .into_iter()
-        .find(|a| a.alias_name == alias)
-        .map(|a| a.collection_name))
+    crate::logging::operation("qdrant", "active_collection", async {
+        let aliases = client
+            .list_aliases()
+            .await
+            .context("No se pudieron consultar los alias de Qdrant")?;
+        Ok(aliases
+            .aliases
+            .into_iter()
+            .find(|a| a.alias_name == alias)
+            .map(|a| a.collection_name))
+    })
+    .await
 }
 
 pub(crate) async fn create_collection(
@@ -121,21 +124,24 @@ pub(crate) async fn create_collection(
     collection: &str,
     binding: &CollectionBinding,
 ) -> Result<()> {
-    let response = client
-        .create_collection(
-            CreateCollectionBuilder::new(collection)
-                .vectors_config(VectorParamsBuilder::new(
-                    config.embedding_dimension as u64,
-                    Distance::Cosine,
-                ))
-                .metadata(binding.metadata()?),
-        )
-        .await
-        .context("No se pudo crear la colección nueva")?;
-    if !response.result {
-        bail!("Qdrant no confirmó la creación de la colección");
-    }
-    Ok(())
+    crate::logging::operation("qdrant", "create_collection", async {
+        let response = client
+            .create_collection(
+                CreateCollectionBuilder::new(collection)
+                    .vectors_config(VectorParamsBuilder::new(
+                        config.embedding_dimension as u64,
+                        Distance::Cosine,
+                    ))
+                    .metadata(binding.metadata()?),
+            )
+            .await
+            .context("No se pudo crear la colección nueva")?;
+        if !response.result {
+            bail!("Qdrant no confirmó la creación de la colección");
+        }
+        Ok(())
+    })
+    .await
 }
 
 pub(crate) async fn collection_binding(
@@ -143,6 +149,7 @@ pub(crate) async fn collection_binding(
     config: &Config,
     collection: &str,
 ) -> Result<CollectionBinding> {
+    crate::logging::operation("qdrant", "collection_binding", async {
     if !collection.starts_with(&format!("rag_{}_", config.embedding_version())) {
         bail!("La colección no corresponde a la configuración de embeddings");
     }
@@ -172,6 +179,7 @@ pub(crate) async fn collection_binding(
         .get(METADATA_KEY)
         .context("La colección no tiene metadatos de este RAG")?;
     serde_json::from_value(metadata.clone().into()).context("Metadatos de ingesta inválidos")
+    }).await
 }
 
 fn confirm_update(response: PointsOperationResponse) -> Result<()> {
@@ -189,11 +197,14 @@ pub(crate) async fn upsert_points(
     collection: &str,
     points: Vec<PointStruct>,
 ) -> Result<()> {
-    confirm_update(
-        client
-            .upsert_points(UpsertPointsBuilder::new(collection, points).wait(true))
-            .await?,
-    )
+    crate::logging::operation("qdrant", "upsert_points", async {
+        confirm_update(
+            client
+                .upsert_points(UpsertPointsBuilder::new(collection, points).wait(true))
+                .await?,
+        )
+    })
+    .await
 }
 
 pub(crate) async fn delete_points(
@@ -201,42 +212,51 @@ pub(crate) async fn delete_points(
     collection: &str,
     ids: &[PointId],
 ) -> Result<()> {
-    for batch in ids.chunks(256) {
-        confirm_update(
-            client
-                .delete_points(
-                    DeletePointsBuilder::new(collection)
-                        .points(PointsIdsList {
-                            ids: batch.to_vec(),
-                        })
-                        .wait(true),
-                )
-                .await?,
-        )?;
-    }
-    Ok(())
+    crate::logging::operation("qdrant", "delete_points", async {
+        for batch in ids.chunks(256) {
+            confirm_update(
+                client
+                    .delete_points(
+                        DeletePointsBuilder::new(collection)
+                            .points(PointsIdsList {
+                                ids: batch.to_vec(),
+                            })
+                            .wait(true),
+                    )
+                    .await?,
+            )?;
+        }
+        Ok(())
+    })
+    .await
 }
 
 pub(crate) async fn verify_count(client: &Qdrant, collection: &str, expected: usize) -> Result<()> {
-    let count = client
-        .count(CountPointsBuilder::new(collection).exact(true))
-        .await?
-        .result
-        .context("Qdrant no devolvió el conteo")?
-        .count;
-    if count != expected as u64 {
-        bail!("Qdrant confirmó {count} puntos, pero se esperaban {expected}");
-    }
-    Ok(())
+    crate::logging::operation("qdrant", "verify_count", async {
+        let count = client
+            .count(CountPointsBuilder::new(collection).exact(true))
+            .await?
+            .result
+            .context("Qdrant no devolvió el conteo")?
+            .count;
+        if count != expected as u64 {
+            bail!("Qdrant confirmó {count} puntos, pero se esperaban {expected}");
+        }
+        Ok(())
+    })
+    .await
 }
 
 pub(crate) async fn publish_alias(client: &Qdrant, alias: &str, collection: &str) -> Result<()> {
-    let response = client
-        .create_alias(CreateAliasBuilder::new(collection, alias))
-        .await
-        .context("No se pudo activar el alias de Qdrant")?;
-    if !response.result {
-        bail!("Qdrant no confirmó la activación del alias");
-    }
-    Ok(())
+    crate::logging::operation("qdrant", "publish_alias", async {
+        let response = client
+            .create_alias(CreateAliasBuilder::new(collection, alias))
+            .await
+            .context("No se pudo activar el alias de Qdrant")?;
+        if !response.result {
+            bail!("Qdrant no confirmó la activación del alias");
+        }
+        Ok(())
+    })
+    .await
 }

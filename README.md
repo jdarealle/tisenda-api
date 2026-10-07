@@ -40,7 +40,7 @@ Las variables están documentadas en [.env.example](.env.example). La API carga 
 | `DOCLING_URL` | Endpoint HTTP de Docling Serve. |
 | `OPENAI_MODEL`, `OPENAI_API_KEY` | Modelo y credenciales para generar respuestas. |
 | `TOP_K` | Máximo de fragmentos enviados al modelo, entre `1` y `50`; predeterminado `5`. |
-| `RUST_LOG` | Filtro de logs; predeterminado `rag=info`. |
+| `RUST_LOG` | Filtro opcional de logs; ausente o vacío usa `rag=debug` en compilaciones de desarrollo y `rag=info` en release. |
 
 Las rutas relativas de `DOCUMENTS_ROOT` se resuelven desde el directorio de ejecución.
 
@@ -64,9 +64,108 @@ cargo run --locked
 | Docling | `http://127.0.0.1:5001/ui` |
 | Qdrant | `http://127.0.0.1:6333/dashboard` |
 
+## Logs
+
+La API usa `tracing` y escribe a stdout. El formato y filtro predeterminado se
+seleccionan al compilar:
+
+| Compilación | Formato | Filtro predeterminado |
+|---|---|---|
+| `cargo run` | Texto compacto | `rag=debug` |
+| `cargo run --release` | JSON por línea | `rag=info` |
+
+La selección usa `cfg!(debug_assertions)`: los perfiles predeterminados de Cargo
+lo activan en desarrollo y lo desactivan en release. Los perfiles personalizados
+que cambien `debug-assertions` también cambiarán esta selección. El formato queda
+fijo en el binario.
+
+`RUST_LOG` es opcional y modifica el detalle y los módulos registrados sin cambiar
+el formato. Ausente o vacío utiliza el filtro predeterminado. Un filtro inválido
+impide iniciar la API sin mostrar el valor recibido. Los errores previos a
+inicializar el logger se escriben como JSON seguro a stderr. Las variables del
+proceso tienen prioridad sobre dotenv.
+
+```bash
+cargo run --locked
+cargo run --locked --release
+RUST_LOG=rag=debug cargo run --locked --release
+RUST_LOG=rag=info,rag::logging::diagnostic=debug cargo run --locked --release
+```
+
+El texto utiliza colores solo cuando stdout es una terminal. Se respeta la
+preferencia estándar `NO_COLOR` si está definida y no está vacía. JSON nunca
+incluye ANSI y contiene `timestamp` UTC, `level`, `target`, `fields` y el contexto
+en `span` y `spans`.
+Los contadores y `duration_ms` son numéricos. Los nombres en `fields.event` son
+identificadores estables de eventos.
+
+Cada solicitud recibe un UUID nuevo en `x-request-id`, aunque el cliente envíe
+otro valor. El mismo identificador acompaña los eventos HTTP y sus operaciones;
+`http_request_completed` también lo incluye explícitamente en `fields.request_id`.
+Los spans propios conservan el contexto cuando el filtro se reduce a
+`rag=warn` o `rag=error`, sin habilitar eventos más detallados. `RUST_LOG=off`
+silencia los eventos. La cabecera de respuesta está documentada como UUID en
+OpenAPI; `X-Request-Id` y `x-request-id` son equivalentes en HTTP.
+Los spans de consulta, lote y documento añaden `query_id`, `batch_id` y
+`document_id`; son identificadores aleatorios de esa ejecución, no identifican
+permanentemente un archivo. Las rutas registradas son las declaradas por el
+router, o `unmatched`, sin parámetros ni query string.
+
+| Evento o detalle | Nivel |
+|---|---|
+| Arranque, escucha y cierre ordenado | `INFO` |
+| Finalización HTTP: 2xx/3xx, 4xx, 5xx | `INFO`, `WARN`, `ERROR`, respectivamente |
+| `/health` satisfactorio | `DEBUG` |
+| Resumen de consulta y de lote, documento completado | `INFO` |
+| Documento rechazado o completado con advertencias; corrección necesaria de citas | `WARN` |
+| Documento fallido; fallo fatal del proceso | `ERROR` |
+| Operación externa fallida, con servicio, operación y categoría segura | `WARN` |
+| Fallo al preparar el router o abrir el puerto, con categoría y código del sistema disponibles | `WARN` |
+| Etapas, recuperaciones, contadores y duración de operaciones satisfactorias | `DEBUG` |
+| Sondeos repetidos de Docling mientras sigue pendiente | `TRACE` |
+
+`http_request_completed` mide hasta que se genera la respuesta, no hasta que el
+cliente termina de descargarla. Se emite una vez por respuesta. Un fallo externo
+puede producir además `operation_failed` y el resumen de la consulta o documento:
+representan operaciones distintas y no repiten la cadena del error. Un HTTP 200
+de ingesta puede contener documentos fallidos; revisar `document_completed` y los
+contadores de `ingestion_batch_completed`.
+
+Los logs propios no incluyen nombres o rutas documentales, preguntas, respuestas,
+fragmentos, embeddings, cabeceras, credenciales ni cuerpos de errores externos,
+incluso en `TRACE`. Los diagnósticos utilizan códigos internos, etapas y estados
+HTTP/gRPC cuando están disponibles. Esta política no modifica el contenido de
+las respuestas de la API. Los filtros predeterminados solo habilitan `rag`;
+habilitar dependencias con `RUST_LOG` puede incorporar datos emitidos por ellas.
+
+La escritura utiliza `tracing-appender` en segundo plano con una cola de 8.192
+líneas. Si se llena, se descartan eventos para que los productores sigan
+atendiendo solicitudes. `logs_dropped` informa el total acumulado cuando aumenta,
+con comprobaciones cada 30 segundos y al cerrar; también puede descartarse si la
+cola sigue llena. Esta cola no es almacenamiento durable ni garantiza entrega.
+Ctrl+C y SIGTERM en Unix inician el cierre ordenado y se intenta vaciar la cola
+al terminar; una salida bloqueada o una terminación forzada puede perder eventos.
+La recolección, retención y rotación de stdout corresponden al entorno de ejecución.
+
+Al usar la biblioteca, el consumidor configura su subscriber. `init_logging()` es
+una opción para aplicaciones con Tokio: instala el subscriber global y devuelve
+un `LoggingGuard` que debe conservarse hasta después del cierre del servidor.
+
+La implementación sigue las APIs oficiales de
+[JSON en tracing-subscriber](https://docs.rs/tracing-subscriber/0.3.23/tracing_subscriber/fmt/format/struct.Json.html),
+[instrumentación asíncrona](https://docs.rs/tracing/latest/tracing/trait.Instrument.html),
+[Tower HTTP](https://docs.rs/tower-http/latest/tower_http/request_id/index.html) y
+[escritura no bloqueante](https://docs.rs/tracing-appender/latest/tracing_appender/non_blocking/index.html).
+La elección de contexto por spans y escritura en segundo plano también considera
+la experiencia de [Luca Palmieri](https://lpalmieri.com/posts/2020-09-27-zero-to-production-4-are-we-observable-yet/)
+y los [reportes de bloqueo de stdout de la comunidad de tracing](https://github.com/tokio-rs/tracing/issues/2653).
+La selección de datos registrados sigue las recomendaciones de
+[OWASP sobre logging](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html).
+
 ## API HTTP
 
-Las solicitudes utilizan JSON y admiten cuerpos de hasta 256 KiB.
+Las solicitudes utilizan JSON y admiten cuerpos de hasta 256 KiB. Las respuestas
+incluyen `x-request-id` para localizar la solicitud en los logs, también en errores.
 
 | Método | Ruta | Función |
 |---|---|---|

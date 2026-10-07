@@ -28,6 +28,18 @@ pub(crate) struct BatchResult {
 }
 
 impl BatchResult {
+    pub(super) fn log_summary(&self, duration: std::time::Duration) {
+        tracing::info!(
+            event = "ingestion_batch_completed",
+            duration_ms = duration.as_secs_f64() * 1000.0,
+            total = self.counts.total,
+            completed = self.counts.completed,
+            completed_with_warnings = self.counts.completed_with_warnings,
+            rejected = self.counts.rejected,
+            failed = self.counts.failed,
+        );
+    }
+
     pub(super) fn new(documents: Vec<FileReport>) -> Self {
         let mut counts = Counts::default();
         for report in &documents {

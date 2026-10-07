@@ -36,6 +36,7 @@ pub async fn ingest_documents(
     results
 }
 
+#[tracing::instrument(skip_all, level = "debug", name = "index_document")]
 async fn ingest_document(config: &Config, document: Document) -> Result<IngestReport> {
     let _writer = index_state::writer_lock(config)?;
     let model = TeiModel::new(config)?;
@@ -49,7 +50,10 @@ async fn ingest_document(config: &Config, document: Document) -> Result<IngestRe
     let collection = active
         .clone()
         .unwrap_or_else(|| index_state::stable_collection(config));
-    let exists = client.collection_exists(collection.as_str()).await?;
+    let exists = crate::logging::operation("qdrant", "collection_exists", async {
+        Ok(client.collection_exists(collection.as_str()).await?)
+    })
+    .await?;
     let binding = if exists {
         qdrant::collection_binding(&client, config, &collection).await?
     } else {
@@ -138,6 +142,13 @@ async fn ingest_document(config: &Config, document: Document) -> Result<IngestRe
         qdrant::publish_alias(&client, &config.qdrant_alias, &collection).await?;
     }
     write::ensure_alias(&client, config, Some(collection.as_str())).await?;
+    tracing::debug!(
+        event = "index_document_completed",
+        chunks_written,
+        files_new = plan.files_new,
+        files_updated = plan.files_updated,
+        files_unchanged = plan.files_unchanged
+    );
     Ok(IngestReport {
         chunks: expected,
         active_collection: collection,

@@ -3,6 +3,7 @@
 mod config;
 mod docs;
 mod http;
+mod logging;
 
 pub use config::ServerConfig;
 pub use http::{router, serve};

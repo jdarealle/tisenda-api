@@ -29,20 +29,23 @@ async fn tei_rpc<M, T, F>(
 where
     F: Future<Output = Result<Response<T>, Status>>,
 {
-    let mut request = Request::new(message);
-    request.set_timeout(deadline);
-    let local_timeout = deadline + LOCAL_TIMEOUT_GRACE;
-    let response = tokio::time::timeout(local_timeout, call(request))
-        .await
-        .with_context(|| {
-            format!(
-                "TEI {rpc}: venció la protección local de {} s (deadline gRPC de {} s)",
-                local_timeout.as_secs(),
-                deadline.as_secs()
-            )
-        })?
-        .with_context(|| format!("TEI gRPC {rpc} devolvió un error"))?;
-    Ok(response.into_inner())
+    crate::logging::operation("tei", rpc, async {
+        let mut request = Request::new(message);
+        request.set_timeout(deadline);
+        let local_timeout = deadline + LOCAL_TIMEOUT_GRACE;
+        let response = tokio::time::timeout(local_timeout, call(request))
+            .await
+            .with_context(|| {
+                format!(
+                    "TEI {rpc}: venció la protección local de {} s (deadline gRPC de {} s)",
+                    local_timeout.as_secs(),
+                    deadline.as_secs()
+                )
+            })?
+            .with_context(|| format!("TEI gRPC {rpc} devolvió un error"))?;
+        Ok(response.into_inner())
+    })
+    .await
 }
 
 #[derive(Clone)]

@@ -54,6 +54,7 @@ impl FileReport {
     }
 
     pub(super) fn stage(&mut self, stage: &str) {
+        tracing::debug!(event = "document_stage", stage);
         self.stage = stage.into();
         self.status = "processing".into();
     }
@@ -72,6 +73,5 @@ impl FileReport {
             code: "processing_failed".into(),
             message: format!("{error:#}"),
         });
-        tracing::error!(document = %self.filename, source_key = %self.source_key, stage = %self.stage, error = %format!("{error:#}"), "ingesta_fallida");
     }
 }

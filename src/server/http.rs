@@ -1,7 +1,8 @@
-use super::ServerConfig;
+use super::{ServerConfig, docs::RequestIdHeader};
 use crate::{
     AnswerRequest, Config, answer,
     ingestions::{BatchResult, Manager, Selection},
+    logging::Failure,
     qdrant,
 };
 use anyhow::Result;
@@ -20,6 +21,7 @@ use utoipa::{OpenApi, ToSchema};
 #[openapi(
     info(title = "Tisenda API", description = "Ingesta de documentos y consultas con fuentes. Los cuerpos JSON admiten hasta 256 KiB."),
     paths(health, query, ingest_batch),
+    modifiers(&RequestIdHeader),
     tags(
         (name = "Salud", description = "Disponibilidad HTTP"),
         (name = "Consultas", description = "Respuestas con referencias documentales"),
@@ -47,8 +49,12 @@ struct ErrorResponse {
     get, path = "/health", tag = "Salud",
     responses((status = 200, description = "API disponible", body = HealthResponse))
 )]
-async fn health() -> Json<HealthResponse> {
-    Json(HealthResponse { status: "ok" })
+async fn health() -> Response {
+    let mut response = Json(HealthResponse { status: "ok" }).into_response();
+    response
+        .extensions_mut()
+        .insert(super::logging::HealthCheck);
+    response
 }
 
 struct AppState {
@@ -56,10 +62,27 @@ struct AppState {
     ingestions: Arc<Manager>,
 }
 
-struct ApiError(StatusCode, String);
+struct ApiError(StatusCode, String, Failure);
+
+impl ApiError {
+    fn new(status: StatusCode, message: String, code: &'static str) -> Self {
+        Self(status, message, Failure::new(code))
+    }
+
+    fn caused(
+        status: StatusCode,
+        message: String,
+        code: &'static str,
+        error: &anyhow::Error,
+    ) -> Self {
+        Self(status, message, Failure::from_error(code, error))
+    }
+}
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.0, Json(ErrorResponse { error: self.1 })).into_response()
+        let mut response = (self.0, Json(ErrorResponse { error: self.1 })).into_response();
+        response.extensions_mut().insert(self.2);
+        response
     }
 }
 
@@ -69,22 +92,42 @@ pub fn router(config: Config, mut server: ServerConfig) -> Result<Router> {
         ingestions: Arc::new(Manager::new(config.clone(), server)?),
         config,
     });
-    Ok(Router::new()
-        .route("/health", get(health))
-        .route("/query", post(query))
-        .route("/ingestions", post(ingest_batch))
-        .layer(DefaultBodyLimit::max(256 * 1024))
-        .with_state(state)
-        .merge(super::docs::router()?))
+    Ok(super::logging::instrument(
+        Router::new()
+            .route("/health", get(health))
+            .route("/query", post(query))
+            .route("/ingestions", post(ingest_batch))
+            .layer(DefaultBodyLimit::max(256 * 1024))
+            .with_state(state)
+            .merge(super::docs::router()?),
+    ))
 }
 
 pub async fn serve(config: Config, server: ServerConfig) -> Result<()> {
-    let listener = tokio::net::TcpListener::bind(server.listen).await?;
-    axum::serve(listener, router(config, server)?)
-        .with_graceful_shutdown(async {
+    let address = server.listen;
+    let app =
+        crate::logging::operation("api", "initialize_router", async { router(config, server) })
+            .await?;
+    let listener = crate::logging::operation("api", "bind_listener", async {
+        Ok(tokio::net::TcpListener::bind(address).await?)
+    })
+    .await?;
+    #[cfg(unix)]
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tracing::info!(event = "server_listening", address = %listener.local_addr()?);
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            #[cfg(unix)]
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = terminate.recv() => {},
+            }
+            #[cfg(not(unix))]
             let _ = tokio::signal::ctrl_c().await;
+            tracing::info!(event = "server_stopping");
         })
         .await?;
+    tracing::info!(event = "server_stopped");
     Ok(())
 }
 
@@ -109,32 +152,42 @@ async fn query(
     State(state): State<Arc<AppState>>,
     payload: Result<Json<AnswerRequest>, JsonRejection>,
 ) -> Result<Json<crate::Answer>, ApiError> {
-    let Json(request) = payload
-        .map_err(|_| ApiError(StatusCode::BAD_REQUEST, "JSON de consulta inválido".into()))?;
+    let Json(request) = payload.map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "JSON de consulta inválido".into(),
+            "invalid_query_json",
+        )
+    })?;
     if request.question.trim().is_empty() {
-        return Err(ApiError(
+        return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "La pregunta no puede estar vacía".into(),
+            "empty_question",
         ));
     }
     let client = qdrant::client(&state.config).map_err(|_| {
-        ApiError(
+        ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Configuración inválida".into(),
+            "qdrant_config_invalid",
         )
     })?;
     let active = qdrant::active_collection(&client, &state.config.qdrant_alias)
         .await
-        .map_err(|_| {
-            ApiError(
+        .map_err(|error| {
+            ApiError::caused(
                 StatusCode::BAD_GATEWAY,
                 "No se pudo consultar Qdrant".into(),
+                "qdrant_unavailable",
+                &error,
             )
         })?;
     if active.is_none() {
-        return Err(ApiError(
+        return Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "No hay índice activo".into(),
+            "index_unavailable",
         ));
     }
     answer(&state.config, request)
@@ -149,7 +202,12 @@ fn query_error(error: anyhow::Error) -> ApiError {
     } else {
         "No se pudo generar la respuesta".into()
     };
-    ApiError(StatusCode::BAD_GATEWAY, message)
+    let code = if error.is::<crate::answer::CitationError>() {
+        "invalid_citations"
+    } else {
+        "answer_failed"
+    };
+    ApiError::caused(StatusCode::BAD_GATEWAY, message, code, &error)
 }
 
 /// Procesar una selección de documentos hasta terminar el lote.
@@ -178,29 +236,47 @@ async fn ingest_batch(
     State(state): State<Arc<AppState>>,
     payload: Result<Json<Selection>, JsonRejection>,
 ) -> Result<Json<BatchResult>, ApiError> {
-    let Json(selection) =
-        payload.map_err(|_| ApiError(StatusCode::BAD_REQUEST, "Selección JSON inválida".into()))?;
-    let _permit = state
-        .ingestions
-        .reserve()
-        .map_err(|e| ApiError(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
-    let keys = state
-        .ingestions
-        .select(selection)
-        .await
-        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    let Json(selection) = payload.map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Selección JSON inválida".into(),
+            "invalid_selection_json",
+        )
+    })?;
+    let _permit = state.ingestions.reserve().map_err(|e| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            e.to_string(),
+            "ingestion_busy",
+        )
+    })?;
+    let keys = state.ingestions.select(selection).await.map_err(|e| {
+        ApiError::caused(
+            StatusCode::BAD_REQUEST,
+            format!("{e:#}"),
+            "invalid_selection",
+            &e,
+        )
+    })?;
     // Rejected-only batches need no conversion or vector service access.
     if keys
         .iter()
         .any(|key| crate::docling::input_format(key).is_some())
     {
-        let incompatibility = state
-            .ingestions
-            .check_index()
-            .await
-            .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+        let incompatibility = state.ingestions.check_index().await.map_err(|e| {
+            ApiError::caused(
+                StatusCode::BAD_GATEWAY,
+                format!("{e:#}"),
+                "index_check_failed",
+                &e,
+            )
+        })?;
         if let Some(message) = incompatibility {
-            return Err(ApiError(StatusCode::CONFLICT, message));
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                message,
+                "index_incompatible",
+            ));
         }
     }
     Ok(Json(state.ingestions.run(keys).await))

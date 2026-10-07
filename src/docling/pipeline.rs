@@ -92,6 +92,7 @@ async fn finish(
         }
         attempt += 1;
         budget = (budget / 2).max(1);
+        tracing::debug!(event = "document_rechunk", attempt, budget);
         report.stage("rechunk");
         let task = client
             .submit(
@@ -153,6 +154,5 @@ async fn finish(
     }
     .into();
     report.stage = "done".into();
-    tracing::info!(document = %report.filename, source_key = %report.source_key, chunks = report.chunks, "ingesta_satisfactoria");
     Ok(())
 }

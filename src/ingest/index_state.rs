@@ -94,65 +94,70 @@ pub(super) async fn read_manifest(
     config: &Config,
     collection: &str,
 ) -> Result<Manifest> {
-    let fields = [
-        "filename",
-        "source_key",
-        "content_hash",
-        "chunk_index",
-        "embedding_version",
-        "embedding_model",
-        "embedding_dimension",
-        "embedding_preprocessing",
-        "document_id",
-        "pipeline_version",
-        "document_chunk_count",
-    ];
-    let mut manifest: Manifest = BTreeMap::new();
-    let mut offset = None;
-    loop {
-        let mut request = ScrollPointsBuilder::new(collection)
-            .limit(256)
-            .with_payload(PayloadIncludeSelector {
-                fields: fields.iter().map(|field| field.to_string()).collect(),
-            })
-            .with_vectors(false);
-        if let Some(offset) = offset {
-            request = request.offset(offset);
-        }
-        let response = client
-            .scroll(request)
-            .await
-            .context("No se pudo leer el estado de los documentos en Qdrant")?;
-        for point in response.result {
-            let id = point.id.context("Qdrant devolvió un punto sin ID")?;
-            let chunk: StoredChunk = serde_json::from_value(Payload::from(point.payload).into())
+    crate::logging::operation("qdrant", "read_manifest", async {
+        let fields = [
+            "filename",
+            "source_key",
+            "content_hash",
+            "chunk_index",
+            "embedding_version",
+            "embedding_model",
+            "embedding_dimension",
+            "embedding_preprocessing",
+            "document_id",
+            "pipeline_version",
+            "document_chunk_count",
+        ];
+        let mut manifest: Manifest = BTreeMap::new();
+        let mut offset = None;
+        loop {
+            let mut request = ScrollPointsBuilder::new(collection)
+                .limit(256)
+                .with_payload(PayloadIncludeSelector {
+                    fields: fields.iter().map(|field| field.to_string()).collect(),
+                })
+                .with_vectors(false);
+            if let Some(offset) = offset {
+                request = request.offset(offset);
+            }
+            let response = client
+                .scroll(request)
+                .await
+                .context("No se pudo leer el estado de los documentos en Qdrant")?;
+            for point in response.result {
+                let id = point.id.context("Qdrant devolvió un punto sin ID")?;
+                let chunk: StoredChunk = serde_json::from_value(
+                    Payload::from(point.payload).into(),
+                )
                 .context(
                     "La colección contiene puntos ajenos al formato de este RAG; no se modifica",
                 )?;
-            if chunk.embedding_version != config.embedding_version()
-                || chunk.embedding_model != config.embedding_model
-                || chunk.embedding_dimension != config.embedding_dimension
-                || chunk.embedding_preprocessing != EMBEDDING_PREPROCESSING
-            {
-                bail!("La colección contiene embeddings incompatibles; no se modifica");
+                if chunk.embedding_version != config.embedding_version()
+                    || chunk.embedding_model != config.embedding_model
+                    || chunk.embedding_dimension != config.embedding_dimension
+                    || chunk.embedding_preprocessing != EMBEDDING_PREPROCESSING
+                {
+                    bail!("La colección contiene embeddings incompatibles; no se modifica");
+                }
+                super::validate_filename(&chunk.filename)
+                    .context("La colección contiene un nombre de documento inválido")?;
+                super::validate_source_key(&chunk.source_key)?;
+                if chunk.source_key.rsplit('/').next() != Some(chunk.filename.as_str()) {
+                    bail!("source_key incompatible con el nombre del documento indexado");
+                }
+                manifest
+                    .entry(chunk.source_key.clone())
+                    .or_default()
+                    .push(StoredPoint { id, chunk });
             }
-            super::validate_filename(&chunk.filename)
-                .context("La colección contiene un nombre de documento inválido")?;
-            super::validate_source_key(&chunk.source_key)?;
-            if chunk.source_key.rsplit('/').next() != Some(chunk.filename.as_str()) {
-                bail!("source_key incompatible con el nombre del documento indexado");
+            offset = response.next_page_offset;
+            if offset.is_none() {
+                break;
             }
-            manifest
-                .entry(chunk.source_key.clone())
-                .or_default()
-                .push(StoredPoint { id, chunk });
         }
-        offset = response.next_page_offset;
-        if offset.is_none() {
-            break;
-        }
-    }
-    Ok(manifest)
+        Ok(manifest)
+    })
+    .await
 }
 
 pub(super) fn unchanged(

@@ -4,7 +4,21 @@ use anyhow::{Context, Result, bail};
 use rig::vector_store::{VectorStoreIndex, request::VectorSearchRequest};
 use rig_qdrant::QdrantFilter;
 
+#[tracing::instrument(skip_all, name = "query", fields(query_id = %uuid::Uuid::new_v4()))]
 pub async fn answer(config: &Config, request: AnswerRequest) -> Result<Answer> {
+    let started = std::time::Instant::now();
+    let result = answer_inner(config, request).await;
+    tracing::info!(
+        event = "query_completed",
+        duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+        outcome = if result.is_ok() { "success" } else { "failed" },
+        sources = result.as_ref().ok().map(|answer| answer.sources.len()),
+        no_evidence = result.as_ref().ok().map(|answer| answer.sources.is_empty()),
+    );
+    result
+}
+
+async fn answer_inner(config: &Config, request: AnswerRequest) -> Result<Answer> {
     let question = request.question.trim();
     if question.is_empty() {
         bail!("La pregunta no puede estar vacía");
@@ -30,9 +44,17 @@ pub async fn answer(config: &Config, request: AnswerRequest) -> Result<Answer> {
         .query(question)
         .samples((top_k * 2).min(50) as u64)
         .build();
-    let results: Vec<(f64, String, Chunk)> = store
-        .top_n(search)
-        .await
-        .context("Falló la búsqueda en Qdrant")?;
+    let results: Vec<(f64, String, Chunk)> = crate::logging::operation("qdrant", "search", async {
+        store
+            .top_n(search)
+            .await
+            .context("Falló la búsqueda en Qdrant")
+    })
+    .await?;
+    tracing::debug!(
+        event = "retrieval_completed",
+        candidates = results.len(),
+        top_k
+    );
     generation::generate(config, question, context::prepare(results, top_k)).await
 }
