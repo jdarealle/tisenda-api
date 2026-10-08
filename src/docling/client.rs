@@ -132,34 +132,35 @@ impl Client {
 
     pub(super) async fn wait(&self, task: &str) -> Result<Value> {
         crate::logging::operation("docling", "wait", async {
-        uuid::Uuid::parse_str(task)?;
-        let started = Instant::now();
-        loop {
-            let response = self
-                .http
-                .get(
-                    self.server
-                        .docling_url
-                        .join(&format!("v1/status/poll/{task}"))?,
-                )
-                .send()
-                .await?;
-            let value = response_json(response).await?;
-            match value["task_status"].as_str() {
-                Some("success" | "partial_success" | "failure" | "skipped") => return Ok(value),
-                Some(state @ ("pending" | "started")) => {
-                    tracing::trace!(event = "docling_poll", state);
+            uuid::Uuid::parse_str(task)?;
+            let started = Instant::now();
+            loop {
+                let response = self
+                    .http
+                    .get(
+                        self.server
+                            .docling_url
+                            .join(&format!("v1/status/poll/{task}"))?,
+                    )
+                    .send()
+                    .await?;
+                let value = response_json(response).await?;
+                match value["task_status"].as_str() {
+                    Some("success" | "partial_success" | "failure" | "skipped") => {
+                        return Ok(value);
+                    }
+                    Some(state @ ("pending" | "started")) => {
+                        tracing::trace!(event = "docling_poll", state);
+                    }
+                    status => bail!("Estado desconocido de Docling: {status:?}"),
                 }
-                status => bail!("Estado desconocido de Docling: {status:?}"),
+                if started.elapsed().as_secs() >= self.server.conversion_timeout_secs {
+                    return Err(crate::ingestions::ConversionTimeout(task.into()).into());
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
-            if started.elapsed().as_secs() >= self.server.conversion_timeout_secs {
-                bail!(
-                    "Venció el tiempo de conversión; tarea Docling {task} puede continuar en el servicio"
-                );
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-        }).await
+        })
+        .await
     }
 
     pub(super) async fn result(&self, task: &str, limits: ArchiveLimits) -> Result<Artifact> {

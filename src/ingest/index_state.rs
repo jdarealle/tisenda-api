@@ -16,17 +16,19 @@ pub(super) type Manifest = BTreeMap<String, Vec<StoredPoint>>;
 
 #[derive(Deserialize)]
 pub(super) struct StoredChunk {
-    filename: String,
-    source_key: String,
-    content_hash: String,
+    pub(super) filename: String,
+    pub(super) source_key: String,
+    pub(super) content_hash: String,
     pub(super) chunk_index: usize,
-    embedding_version: String,
-    embedding_model: String,
-    embedding_dimension: usize,
-    embedding_preprocessing: String,
-    document_id: String,
-    pipeline_version: String,
-    document_chunk_count: usize,
+    pub(super) embedding_version: String,
+    pub(super) embedding_model: String,
+    pub(super) embedding_dimension: usize,
+    pub(super) embedding_preprocessing: String,
+    pub(super) document_id: String,
+    pub(super) pipeline_version: String,
+    pub(super) document_chunk_count: usize,
+    #[serde(default)]
+    pub(super) metadata: serde_json::Value,
 }
 
 pub(super) struct StoredPoint {
@@ -107,6 +109,8 @@ pub(super) async fn read_manifest(
             "document_id",
             "pipeline_version",
             "document_chunk_count",
+            "metadata.rag.original_sha256",
+            "metadata.rag.profile",
         ];
         let mut manifest: Manifest = BTreeMap::new();
         let mut offset = None;
@@ -193,10 +197,21 @@ pub(super) fn written(
             || chunk.document_id != document_id
             || chunk.pipeline_version != pipeline
             || chunk.document_chunk_count != expected
+            || !provenance_matches(document, chunk)
         {
             return false;
         }
         positions.insert(chunk.chunk_index);
     }
     positions.len() == expected
+}
+
+fn provenance_matches(document: &Document, stored: &StoredChunk) -> bool {
+    let rag = document.chunks[stored.chunk_index]
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("rag"));
+    ["original_sha256", "profile"].into_iter().all(|key| {
+        rag.and_then(|r| r.get(key)) == stored.metadata.get("rag").and_then(|r| r.get(key))
+    })
 }

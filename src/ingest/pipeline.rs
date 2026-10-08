@@ -10,6 +10,14 @@ pub async fn ingest_documents(
     config: &Config,
     documents: Vec<IngestDocument>,
 ) -> Vec<DocumentIngestResult> {
+    ingest_with_progress(config, documents, None).await
+}
+
+pub(crate) async fn ingest_with_progress(
+    config: &Config,
+    documents: Vec<IngestDocument>,
+    progress: Option<&crate::ingestions::Progress>,
+) -> Vec<DocumentIngestResult> {
     let mut results = Vec::with_capacity(documents.len());
     let mut names = std::collections::HashMap::new();
     for doc in &documents {
@@ -24,7 +32,7 @@ pub async fn ingest_documents(
                 bail!("source_key duplicada");
             }
             let document = document_processor::prepare(config, doc)?;
-            ingest_document(config, document).await
+            ingest_document(config, document, progress).await
         }
         .await;
         results.push(DocumentIngestResult {
@@ -37,7 +45,14 @@ pub async fn ingest_documents(
 }
 
 #[tracing::instrument(skip_all, level = "debug", name = "index_document")]
-async fn ingest_document(config: &Config, document: Document) -> Result<IngestReport> {
+async fn ingest_document(
+    config: &Config,
+    document: Document,
+    progress: Option<&crate::ingestions::Progress>,
+) -> Result<IngestReport> {
+    if let Some(progress) = progress {
+        progress.check()?;
+    }
     let _writer = index_state::writer_lock(config)?;
     let model = TeiModel::new(config)?;
     // Info identifica el modelo; una ejecución sin cambios no necesita Embed.
@@ -86,6 +101,9 @@ async fn ingest_document(config: &Config, document: Document) -> Result<IngestRe
                 );
             }
         }
+        if let Some(progress) = progress {
+            progress.check()?;
+        }
         let checked_identity = model
             .preflight()
             .await
@@ -97,11 +115,22 @@ async fn ingest_document(config: &Config, document: Document) -> Result<IngestRe
         }
     }
     write::ensure_alias(&client, config, active.as_deref()).await?;
+    if let Some(progress) = progress {
+        progress.check()?;
+    }
     if !exists {
         qdrant::create_collection(&client, config, &collection, &binding).await?;
     }
-    let chunks_written =
-        write::documents(&client, &model, &collection, &pipeline, &plan.changed).await?;
+    qdrant::ensure_source_index(&client, &collection).await?;
+    let chunks_written = write::documents(
+        &client,
+        &model,
+        &collection,
+        &pipeline,
+        &plan.changed,
+        progress,
+    )
+    .await?;
     let expected = plan.expected_chunks;
     // Confirmar los IDs y metadatos nuevos mientras los sobrantes siguen presentes.
     if !plan.changed.is_empty() {
@@ -132,6 +161,9 @@ async fn ingest_document(config: &Config, document: Document) -> Result<IngestRe
         if document.obsolete_ids.is_empty() {
             continue;
         }
+        if let Some(progress) = progress {
+            progress.check()?;
+        }
         qdrant::delete_points(&client, &collection, &document.obsolete_ids).await?;
     }
     qdrant::verify_count(&client, &collection, expected)
@@ -139,6 +171,9 @@ async fn ingest_document(config: &Config, document: Document) -> Result<IngestRe
         .context("El índice no tiene el conteo esperado")?;
     if active.is_none() {
         write::ensure_alias(&client, config, None).await?;
+        if let Some(progress) = progress {
+            progress.check()?;
+        }
         qdrant::publish_alias(&client, &config.qdrant_alias, &collection).await?;
     }
     write::ensure_alias(&client, config, Some(collection.as_str())).await?;

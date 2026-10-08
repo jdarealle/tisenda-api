@@ -8,6 +8,22 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[derive(Debug)]
+pub(super) struct InvalidSource(anyhow::Error);
+impl std::fmt::Display for InvalidSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+impl std::error::Error for InvalidSource {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+fn invalid(message: impl Into<String>) -> anyhow::Error {
+    InvalidSource(anyhow::anyhow!(message.into())).into()
+}
+
 pub(super) struct SourceRoot {
     path: PathBuf,
     directory: File,
@@ -112,10 +128,12 @@ impl SourceRoot {
         destination: &Path,
         limit: u64,
     ) -> Result<String> {
-        let file = self.open(key)?;
+        let file = self.open(key).map_err(InvalidSource)?;
         let size = file.metadata()?.len();
         if size == 0 || size > limit {
-            bail!("Tamaño original inválido: {size} bytes; máximo {limit}");
+            return Err(invalid(format!(
+                "Tamaño original inválido: {size} bytes; máximo {limit}"
+            )));
         }
         let mut input = tokio::fs::File::from_std(file);
         let mut output = tokio::fs::File::create(destination).await?;
@@ -129,13 +147,15 @@ impl SourceRoot {
             }
             total = total.saturating_add(count as u64);
             if total > limit {
-                bail!("El original creció más allá de {limit} bytes");
+                return Err(invalid(format!(
+                    "El original creció más allá de {limit} bytes"
+                )));
             }
             output.write_all(&buffer[..count]).await?;
             hash.update(&buffer[..count]);
         }
         if total == 0 {
-            bail!("El original quedó vacío durante la copia");
+            return Err(invalid("El original quedó vacío durante la copia"));
         }
         output.flush().await?;
         Ok(format!("{:x}", hash.finalize()))

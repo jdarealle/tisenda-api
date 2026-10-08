@@ -16,6 +16,8 @@ pub struct ServerConfig {
     pub ocr_preset: String,
     pub documents_root: PathBuf,
     pub max_original_bytes: u64,
+    pub ingestions_db_path: PathBuf,
+    pub ingestions_temp_root: PathBuf,
 }
 
 impl ServerConfig {
@@ -41,6 +43,8 @@ impl ServerConfig {
                 .context("DOCLING_DO_OCR debe ser true o false")?,
             ocr_preset: value("DOCLING_OCR_PRESET", "auto"),
             documents_root: value("DOCUMENTS_ROOT", "manuales").into(),
+            ingestions_db_path: value("INGESTIONS_DB_PATH", "data/ingestions.sqlite").into(),
+            ingestions_temp_root: value("INGESTIONS_TEMP_ROOT", "data/tmp").into(),
             max_original_bytes: value("DOCLING_SERVE_MAX_FILE_SIZE", "52428800").parse()?,
         })
     }

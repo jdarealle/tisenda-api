@@ -10,10 +10,14 @@ pub(super) async fn documents(
     collection: &str,
     pipeline: &str,
     documents: &[plan::PendingDocument<'_>],
+    progress: Option<&crate::ingestions::Progress>,
 ) -> Result<usize> {
     let mut chunks_written = 0;
     for document in documents {
         for batch in document.chunks.chunks(TeiModel::MAX_DOCUMENTS) {
+            if let Some(progress) = progress {
+                progress.check()?;
+            }
             let embedded = EmbeddingsBuilder::new(model.clone())
                 .documents(batch.to_vec())?
                 .build()
@@ -47,6 +51,9 @@ pub(super) async fn documents(
                     vector,
                     Payload::try_from(payload)?,
                 ));
+            }
+            if let Some(progress) = progress {
+                progress.check()?;
             }
             qdrant::upsert_points(client, collection, points)
                 .await

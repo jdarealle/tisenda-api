@@ -1,5 +1,5 @@
 use super::{ArchiveLimits, Client, FileReport, provenance};
-use crate::{Config, DoclingChunk, IngestDocument, ingest::ingest_documents, tei::TeiModel};
+use crate::{Config, DoclingChunk, IngestDocument, ingest::ingest_with_progress, tei::TeiModel};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -11,8 +11,9 @@ pub(crate) async fn process_original(
     limits: ArchiveLimits,
     directory: &Path,
     report: &mut FileReport,
+    progress: &crate::ingestions::Progress,
 ) -> Result<()> {
-    report.stage("conversion");
+    progress.stage(report, "conversion").await?;
     let task = client
         .submit(
             config,
@@ -23,6 +24,7 @@ pub(crate) async fn process_original(
         )
         .await?;
     report.task_ids.push(task.clone());
+    progress.save(report).await?;
     let status = client.wait(&task).await?;
     match status["task_status"].as_str() {
         Some("success") => {}
@@ -31,7 +33,7 @@ pub(crate) async fn process_original(
             .push(format!("Conversión parcial: {status}")),
         _ => bail!("Conversión no satisfactoria: {status}"),
     }
-    report.stage("download");
+    progress.stage(report, "download").await?;
     let artifact = client.result(&task, limits.clone()).await?;
     let (document_name, document) = artifact.document()?;
     provenance::validate_images(&document, &document_name, &artifact.files)?;
@@ -48,6 +50,7 @@ pub(crate) async fn process_original(
         limits,
         directory,
         report,
+        progress,
         Converted { chunks, document },
     )
     .await
@@ -64,13 +67,14 @@ async fn finish(
     limits: ArchiveLimits,
     directory: &Path,
     report: &mut FileReport,
+    progress: &crate::ingestions::Progress,
     converted: Converted,
 ) -> Result<()> {
     let Converted {
         mut chunks,
         document,
     } = converted;
-    report.stage("tokens");
+    progress.stage(report, "tokens").await?;
     let tei = TeiModel::new(config)?;
     let identity = tei.check_model().await?;
     let limit = tei.input_limit().await?;
@@ -93,7 +97,7 @@ async fn finish(
         attempt += 1;
         budget = (budget / 2).max(1);
         tracing::debug!(event = "document_rechunk", attempt, budget);
-        report.stage("rechunk");
+        progress.stage(report, "rechunk").await?;
         let task = client
             .submit(
                 config,
@@ -104,6 +108,7 @@ async fn finish(
             )
             .await?;
         report.task_ids.push(task.clone());
+        progress.save(report).await?;
         let status = client.wait(&task).await?;
         if status["task_status"] != "success" {
             bail!("Falló la recuperación Docling: {status}");
@@ -115,7 +120,7 @@ async fn finish(
             bail!("Docling repitió los mismos fragmentos incompatibles; recuperación detenida");
         }
         previous = serialized;
-        report.stage("tokens");
+        progress.stage(report, "tokens").await?;
     };
     if tei.check_model().await? != identity {
         bail!("TEI cambió de revisión durante la validación");
@@ -132,21 +137,30 @@ async fn finish(
         )?;
     }
     report.chunks = chunks.len();
-    report.stage("index");
-    let results = ingest_documents(
+    progress.stage(report, "index").await?;
+    let results = ingest_with_progress(
         config,
         vec![IngestDocument {
             filename: report.filename.clone(),
             source_key: report.source_key.clone(),
             chunks,
         }],
+        Some(progress),
     )
     .await;
-    results
+    let indexed = results
         .into_iter()
         .next()
         .context("Falta resultado de indexación")?
         .result?;
+    report.result = Some(
+        if indexed.files_unchanged == 1 {
+            "unchanged"
+        } else {
+            "indexed"
+        }
+        .into(),
+    );
     report.status = if report.warnings.is_empty() {
         "completed"
     } else {

@@ -1,56 +1,78 @@
 use crate::docling::FileReport;
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 #[derive(Default, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Selection {
-    /// Archivos o carpetas relativos a DOCUMENTS_ROOT; omitido o vacío selecciona toda la raíz.
+    /// Rutas relativas; omitido o vacío selecciona toda DOCUMENTS_ROOT.
     #[serde(default)]
     pub(super) paths: Vec<String>,
 }
 
-/// Contadores de estados excluyentes de los documentos del lote.
-#[derive(Default, Serialize, ToSchema)]
-struct Counts {
-    total: usize,
-    completed: usize,
-    completed_with_warnings: usize,
-    rejected: usize,
-    failed: usize,
+#[derive(Serialize, ToSchema)]
+pub(crate) struct AcceptedBatch {
+    pub(crate) batch_id: String,
+    pub(crate) total: usize,
+    pub(crate) status_url: String,
 }
 
-/// Resultado final del lote; un HTTP 200 puede incluir documentos rechazados o fallidos.
+#[derive(Default, Serialize, ToSchema)]
+pub(super) struct Counts {
+    pub(super) total: i64,
+    pub(super) pending: i64,
+    pub(super) processing: i64,
+    pub(super) completed: i64,
+    pub(super) completed_with_warnings: i64,
+    pub(super) rejected: i64,
+    pub(super) failed: i64,
+}
+
 #[derive(Serialize, ToSchema)]
 pub(crate) struct BatchResult {
-    counts: Counts,
-    pub(super) documents: Vec<FileReport>,
+    pub(super) batch_id: String,
+    /// pending, processing o completed; revisar counts para conocer los fallos.
+    pub(super) status: String,
+    pub(super) counts: Counts,
+    /// Fechas UTC expresadas en milisegundos desde Unix epoch.
+    pub(super) created_at: i64,
+    pub(super) finished_at: Option<i64>,
+    pub(super) limit: i64,
+    pub(super) offset: i64,
+    pub(super) documents: Vec<JobReport>,
 }
 
-impl BatchResult {
-    pub(super) fn log_summary(&self, duration: std::time::Duration) {
-        tracing::info!(
-            event = "ingestion_batch_completed",
-            duration_ms = duration.as_secs_f64() * 1000.0,
-            total = self.counts.total,
-            completed = self.counts.completed,
-            completed_with_warnings = self.counts.completed_with_warnings,
-            rejected = self.counts.rejected,
-            failed = self.counts.failed,
-        );
-    }
+#[derive(Serialize, ToSchema)]
+pub(super) struct JobReport {
+    pub(super) job_id: String,
+    pub(super) attempts: i64,
+    pub(super) created_at: i64,
+    pub(super) started_at: Option<i64>,
+    pub(super) updated_at: i64,
+    pub(super) finished_at: Option<i64>,
+    pub(super) next_attempt_at: Option<i64>,
+    #[serde(flatten)]
+    pub(super) report: FileReport,
+}
 
-    pub(super) fn new(documents: Vec<FileReport>) -> Self {
-        let mut counts = Counts::default();
-        for report in &documents {
-            counts.total += 1;
-            match report.status.as_str() {
-                "completed" => counts.completed += 1,
-                "completed_with_warnings" => counts.completed_with_warnings += 1,
-                "rejected" => counts.rejected += 1,
-                _ => counts.failed += 1,
-            }
-        }
-        Self { counts, documents }
+#[derive(Deserialize, IntoParams)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Pagination {
+    /// Tamaño de página entre 1 y 500; por defecto 100.
+    #[serde(default = "default_limit")]
+    pub(crate) limit: i64,
+    #[serde(default)]
+    pub(crate) offset: i64,
+}
+fn default_limit() -> i64 {
+    100
+}
+impl Pagination {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            (1..=500).contains(&self.limit) && self.offset >= 0,
+            "Paginación inválida"
+        );
+        Ok(())
     }
 }

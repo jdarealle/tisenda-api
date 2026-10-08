@@ -1,74 +1,64 @@
-use super::{BatchResult, Selection, source::SourceRoot};
-use crate::logging::Failure;
+use super::{
+    Selection,
+    progress::{PersistenceError, Progress},
+    retry,
+    source::SourceRoot,
+    store::{Job, Store},
+    types::{AcceptedBatch, BatchResult, Pagination},
+};
 use crate::{
     Config, ServerConfig,
     docling::{self, ArchiveLimits, Client, FileReport},
-    qdrant,
+    ingest,
 };
-use anyhow::{Context, Result};
-use std::{path::Path, sync::Arc, time::Instant};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tracing::Instrument;
+use anyhow::Result;
+use std::{path::Path, sync::Arc};
+use tokio::sync::Notify;
 
 pub(crate) struct Manager {
     config: Config,
     server: ServerConfig,
     client: Client,
     root: Arc<SourceRoot>,
-    slots: Arc<Semaphore>,
+    pub(super) store: Arc<Store>,
+    pub(super) wake: Notify,
 }
-
 impl Manager {
-    pub(crate) fn new(config: Config, mut server: ServerConfig) -> Result<Self> {
+    pub(crate) async fn new(config: Config, mut server: ServerConfig) -> Result<Self> {
         server.validate(&config)?;
+        let root = Arc::new(SourceRoot::new(&server.documents_root)?);
+        let client = Client::new(&server)?;
+        let store =
+            Arc::new(Store::open(&server.ingestions_db_path, &server.ingestions_temp_root).await?);
         Ok(Self {
-            client: Client::new(&server)?,
-            root: Arc::new(SourceRoot::new(&server.documents_root)?),
             config,
             server,
-            slots: Arc::new(Semaphore::new(1)),
+            client,
+            root,
+            store,
+            wake: Notify::new(),
         })
     }
-
-    pub(crate) fn reserve(&self) -> Result<OwnedSemaphorePermit> {
-        self.slots
-            .clone()
-            .try_acquire_owned()
-            .context("Ya existe un lote activo")
-    }
-
     pub(crate) async fn select(&self, selection: Selection) -> Result<Vec<String>> {
         let root = self.root.clone();
-        let span = tracing::Span::current();
-        let dispatch = tracing::dispatcher::get_default(Clone::clone);
-        tokio::task::spawn_blocking(move || {
-            tracing::dispatcher::with_default(&dispatch, || {
-                span.in_scope(|| {
-                    let result = root.select(&selection.paths);
-                    tracing::debug!(
-                        event = "document_selection_completed",
-                        documents = result.as_ref().ok().map(Vec::len)
-                    );
-                    result
-                })
-            })
-        })
-        .await?
+        tokio::task::spawn_blocking(move || root.select(&selection.paths)).await?
     }
-
-    pub(crate) async fn check_index(&self) -> Result<Option<String>> {
-        let client = qdrant::client(&self.config)?;
-        if let Some(active) = qdrant::active_collection(&client, &self.config.qdrant_alias).await? {
-            let binding = qdrant::collection_binding(&client, &self.config, &active).await?;
-            binding.validate_source(&self.config)?;
-            return Ok(binding
-                .validate_ingestion()
-                .err()
-                .map(|error| error.to_string()));
-        }
-        Ok(None)
+    pub(crate) async fn enqueue(&self, keys: Vec<String>) -> Result<AcceptedBatch> {
+        let reports = keys.into_iter().map(|key| self.report(key)).collect();
+        let accepted = self.store.enqueue(reports).await.inspect_err(|_| {
+            self.store.stop();
+        })?;
+        self.wake.notify_one();
+        Ok(accepted)
     }
-
+    pub(crate) async fn batch(&self, id: &str, page: &Pagination) -> Result<Option<BatchResult>> {
+        self.store.batch(id, page).await
+    }
+    fn report(&self, key: String) -> FileReport {
+        let filename = key.rsplit('/').next().unwrap_or(&key).to_owned();
+        let profile = self.client.profile(&self.config, &filename);
+        FileReport::new(filename, key, profile)
+    }
     fn limits(&self) -> ArchiveLimits {
         ArchiveLimits {
             download: self.server.max_download_bytes,
@@ -78,47 +68,73 @@ impl Manager {
         }
     }
 
-    /// Synchronous batch operation; no detached jobs or durable task state.
-    #[tracing::instrument(skip_all, name = "ingestion_batch", fields(batch_id = %uuid::Uuid::new_v4()))]
-    pub(crate) async fn run(&self, keys: Vec<String>) -> BatchResult {
-        let started = Instant::now();
-        tracing::info!(event = "ingestion_batch_started", documents = keys.len());
-        let mut documents = Vec::with_capacity(keys.len());
-        for key in keys {
-            let report = async {
-                let started = Instant::now();
-                // select() has already validated relative paths and basenames.
-                let filename = key.rsplit('/').next().unwrap_or(&key).to_owned();
-                let profile = self.client.profile(&self.config, &filename);
-                let mut report = FileReport::new(filename, key, profile);
-                let failure = if docling::input_format(&report.filename).is_none() {
-                    report.reject();
-                    Some(Failure::new("unsupported_extension"))
-                } else if let Err(error) = self.process(&mut report).await {
-                    report.fail(&error);
-                    Some(Failure::from_error("processing_failed", &error))
-                } else {
-                    None
-                };
-                log_document(&report, failure.as_ref(), started);
-                report
+    pub(super) async fn execute(&self, mut job: Job) -> Result<()> {
+        if job.recover {
+            // Reconcile the last observed version before rereading an original that may have changed.
+            let progress = Progress::new(self.store.clone(), job.id.clone(), job.attempts);
+            progress.stage(&mut job.report, "check_index").await?;
+            match ingest::original_unchanged(&self.config, &job.report, &progress).await {
+                Ok(Some(chunks)) => {
+                    complete_unchanged(&mut job.report, chunks);
+                    return self.store.finish(&job, None).await;
+                }
+                Err(error) if error.is::<PersistenceError>() => return Err(error),
+                Err(error) if retry::transient(&error) => {
+                    // A failed query is not absence, even after the third interrupted attempt.
+                    job.report.fail(&error);
+                    return self.store.finish(&job, Some(10)).await;
+                }
+                Err(error) => {
+                    job.report.fail(&error);
+                    return self.store.finish(&job, None).await;
+                }
+                Ok(None) => {}
             }
-            .instrument(tracing::info_span!("document", document_id = %uuid::Uuid::new_v4()))
-            .await;
-            documents.push(report);
+            if job.attempts >= 3 {
+                job.report.fail(&anyhow::anyhow!(
+                    "Intentos agotados tras reconciliar la ejecución interrumpida"
+                ));
+                return self.store.finish(&job, None).await;
+            }
         }
-        let result = BatchResult::new(documents);
-        result.log_summary(started.elapsed());
-        result
+        job.report = self.report(job.report.source_key.clone());
+        job.report.status = "processing".into();
+        self.store.begin_attempt(&mut job).await?;
+        let progress = Progress::new(self.store.clone(), job.id.clone(), job.attempts);
+        let mut delay = None;
+        if docling::input_format(&job.report.filename).is_none() {
+            job.report.reject();
+        } else if let Err(error) = self.process(&mut job.report, &progress).await {
+            if error.is::<PersistenceError>() {
+                return Err(error);
+            }
+            if retry::transient(&error) {
+                delay = retry::delay(job.attempts);
+            }
+            job.report.fail(&error);
+            if error.is::<super::source::InvalidSource>() {
+                job.report.status = "rejected".into();
+                if let Some(error) = &mut job.report.error {
+                    error.code = "invalid_source".into();
+                }
+            }
+        }
+        tracing::info!(
+            event = "ingestion_job_finished",
+            job_id = job.id,
+            attempt = job.attempts,
+            status = job.report.status,
+            result = job.report.result,
+            retry_seconds = delay
+        );
+        self.store.finish(&job, delay).await
     }
-
-    async fn process(&self, report: &mut FileReport) -> Result<()> {
-        // TempDir removes the original and canonical JSON on success, error or
-        // future cancellation. No exported ZIP or execution manifest is saved.
-        let temporary = tempfile::Builder::new().prefix("rag-document-").tempdir()?;
-        let result = self.convert(temporary.path(), report).await;
+    async fn process(&self, report: &mut FileReport, progress: &Progress) -> Result<()> {
+        let temporary = tempfile::Builder::new()
+            .prefix("rag-document-")
+            .tempdir_in(&self.store.temp_root)?;
+        let result = self.convert(temporary.path(), report, progress).await;
         if let Err(error) = temporary.close() {
-            tracing::warn!(event = "temporary_cleanup_failed", error_kind = "io");
             report
                 .warnings
                 .push(format!("No se pudo limpiar el temporal: {error}"));
@@ -128,10 +144,13 @@ impl Manager {
         }
         result
     }
-
-    async fn convert(&self, directory: &Path, report: &mut FileReport) -> Result<()> {
-        tracing::debug!(event = "document_stage", stage = "snapshot");
-        report.stage = "snapshot".into();
+    async fn convert(
+        &self,
+        directory: &Path,
+        report: &mut FileReport,
+        progress: &Progress,
+    ) -> Result<()> {
+        progress.stage(report, "snapshot").await?;
         report.original_sha256 = Some(
             self.root
                 .snapshot(
@@ -141,28 +160,31 @@ impl Manager {
                 )
                 .await?,
         );
-        docling::process_original(&self.config, &self.client, self.limits(), directory, report)
-            .await
+        progress.stage(report, "check_index").await?;
+        if let Some(chunks) = ingest::original_unchanged(&self.config, report, progress).await? {
+            complete_unchanged(report, chunks);
+            return Ok(());
+        }
+        docling::process_original(
+            &self.config,
+            &self.client,
+            self.limits(),
+            directory,
+            report,
+            progress,
+        )
+        .await
     }
 }
-
-fn log_document(report: &FileReport, failure: Option<&Failure>, started: Instant) {
-    macro_rules! completed {
-        ($level:ident) => {
-            tracing::$level!(
-                event = "document_completed", status = %report.status, stage = %report.stage,
-                chunks = report.chunks, warnings = report.warnings.len(),
-                duration_ms = started.elapsed().as_secs_f64() * 1000.0,
-                error_code = failure.map(|failure| failure.code),
-                error_kind = failure.map(|failure| failure.kind),
-                upstream_http_status = failure.and_then(|failure| failure.http_status),
-                grpc_code = failure.and_then(|failure| failure.grpc_code),
-            )
-        };
+fn complete_unchanged(report: &mut FileReport, chunks: usize) {
+    report.chunks = chunks;
+    report.result = Some("unchanged".into());
+    report.status = if report.warnings.is_empty() {
+        "completed"
+    } else {
+        "completed_with_warnings"
     }
-    match report.status.as_str() {
-        "failed" => completed!(error),
-        "rejected" | "completed_with_warnings" => completed!(warn),
-        _ => completed!(info),
-    }
+    .into();
+    report.stage = "done".into();
+    report.error = None;
 }

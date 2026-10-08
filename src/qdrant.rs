@@ -6,10 +6,10 @@ use anyhow::{Context, Result, bail};
 use qdrant_client::{
     Qdrant,
     qdrant::{
-        CountPointsBuilder, CreateAliasBuilder, CreateCollectionBuilder, DeletePointsBuilder,
-        Distance, PointId, PointStruct, PointsIdsList, PointsOperationResponse, QueryPointsBuilder,
-        UpdateStatus, UpsertPointsBuilder, VectorParamsBuilder,
-        vectors_config::Config as VectorConfig,
+        CountPointsBuilder, CreateAliasBuilder, CreateCollectionBuilder,
+        CreateFieldIndexCollectionBuilder, DeletePointsBuilder, Distance, FieldType, PointId,
+        PointStruct, PointsIdsList, PointsOperationResponse, QueryPointsBuilder, UpdateStatus,
+        UpsertPointsBuilder, VectorParamsBuilder, vectors_config::Config as VectorConfig,
     },
 };
 use rig_qdrant::QdrantVectorStore;
@@ -84,7 +84,11 @@ impl CollectionBinding {
 }
 
 pub(crate) fn client(config: &Config) -> Result<Qdrant> {
+    // The optional version probe in build() blocks the caller while joining a
+    // temporary runtime. Keep construction local so Tokio can drive other work;
+    // availability and index compatibility are checked by the async operations.
     Qdrant::from_url(&config.qdrant_url)
+        .skip_compatibility_check()
         .build()
         .context("No se pudo crear el cliente Qdrant")
 }
@@ -259,4 +263,20 @@ pub(crate) async fn publish_alias(client: &Qdrant, alias: &str, collection: &str
         Ok(())
     })
     .await
+}
+
+/// Idempotent for collections created by earlier versions too.
+pub(crate) async fn ensure_source_index(client: &Qdrant, collection: &str) -> Result<()> {
+    confirm_update(
+        client
+            .create_field_index(
+                CreateFieldIndexCollectionBuilder::new(
+                    collection,
+                    "source_key",
+                    FieldType::Keyword,
+                )
+                .wait(true),
+            )
+            .await?,
+    )
 }

@@ -12,7 +12,7 @@ pub(crate) struct ArchiveLimits {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub(crate) struct FileError {
-    /// unsupported_extension o processing_failed.
+    /// unsupported_extension, invalid_source o processing_failed.
     pub(crate) code: String,
     pub(crate) message: String,
 }
@@ -21,13 +21,16 @@ pub(crate) struct FileError {
 pub(crate) struct FileReport {
     pub(crate) filename: String,
     pub(crate) source_key: String,
-    /// Estado final: completed, completed_with_warnings, rejected o failed.
+    /// pending, processing, completed, completed_with_warnings, rejected o failed.
     pub(crate) status: String,
-    /// Etapa: validation, snapshot, conversion, download, tokens, rechunk, index o done.
+    /// Etapa: validation, snapshot, check_index, conversion, download, tokens, rechunk, index o done.
     pub(crate) stage: String,
     #[schema(required = true)]
     pub(crate) original_sha256: Option<String>,
     pub(crate) task_ids: Vec<String>,
+    /// indexed o unchanged al terminar correctamente.
+    #[serde(default)]
+    pub(crate) result: Option<String>,
     /// Fragmentos preparados; solo un estado completed o completed_with_warnings confirma su indexación.
     pub(crate) chunks: usize,
     pub(crate) warnings: Vec<String>,
@@ -46,17 +49,12 @@ impl FileReport {
             stage: "validation".into(),
             original_sha256: None,
             task_ids: vec![],
+            result: None,
             chunks: 0,
             warnings: vec![],
             error: None,
             profile,
         }
-    }
-
-    pub(super) fn stage(&mut self, stage: &str) {
-        tracing::debug!(event = "document_stage", stage);
-        self.stage = stage.into();
-        self.status = "processing".into();
     }
 
     pub(crate) fn reject(&mut self) {

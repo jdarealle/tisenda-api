@@ -1,8 +1,15 @@
-//! Selección y procesamiento de lotes desde la raíz documental.
+//! Cola persistente, selección segura y worker secuencial de ingesta.
 
 mod manager;
+mod progress;
+mod retry;
 mod source;
+mod store;
 mod types;
+mod worker;
 
 pub(crate) use manager::Manager;
-pub(crate) use types::{BatchResult, Selection};
+pub(crate) use progress::Progress;
+pub(crate) use retry::ConversionTimeout;
+pub(crate) use types::{AcceptedBatch, BatchResult, Pagination, Selection};
+pub(crate) use worker::Worker;

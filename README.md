@@ -23,7 +23,7 @@ flowchart LR
     API <-->|Generación de respuestas|OpenAI
 ```
 
-La API se ejecuta en el host. [compose.yaml](compose.yaml) levanta Docling Serve, TEI y Qdrant; Qdrant y la caché del modelo TEI usan volúmenes persistentes de Podman.
+La API y su worker integrado se ejecutan en el host. [compose.yaml](compose.yaml) levanta Docling Serve, TEI y Qdrant; Qdrant y la caché del modelo TEI usan volúmenes persistentes de Podman. SQLite guarda la cola y el historial en `INGESTIONS_DB_PATH`, cuyo valor predeterminado es `data/ingestions.sqlite`.
 
 ## Puesta en marcha
 
@@ -66,6 +66,8 @@ curl --fail-with-body http://127.0.0.1:5001/ready
 cargo run --locked
 ```
 
+La API crea la base SQLite y sus directorios al iniciar. Una segunda instancia que use la misma base no podrá adquirir su bloqueo exclusivo.
+
 Abre [Scalar](http://127.0.0.1:3000/docs), ejecuta una ingesta de los documentos y después realiza una consulta. Es necesario indexar documentos antes de poder consultar sus contenidos.
 
 ## Documentación de la API
@@ -83,11 +85,51 @@ Estas direcciones corresponden a la configuración local de la plantilla:
 
 Scalar necesita acceso desde el navegador a `cdn.jsdelivr.net` para cargar su JavaScript.
 
+## Ingesta asíncrona
+
+```bash
+curl --fail-with-body -i http://127.0.0.1:3000/ingestions \
+  -H 'Content-Type: application/json' \
+  -d '{"paths":["manual.pdf","catalogos"]}'
+```
+
+Después de confirmar la transacción SQLite, devuelve `202 Accepted`, una cabecera `Location: /ingestions/{batch_id}` y este cuerpo:
+
+```json
+{"batch_id":"<uuid>","total":12,"status_url":"/ingestions/<uuid>"}
+```
+
+`{}` o `{"paths":[]}` selecciona toda la raíz. La lista se resuelve, ordena y deduplica al aceptar el lote. Los archivos añadidos después requieren otra solicitud. El contenido de cada archivo se lee cuando llega su turno, también en los reintentos.
+
+```bash
+curl --fail-with-body 'http://127.0.0.1:3000/ingestions/<uuid>?limit=100&offset=0'
+```
+
+La consulta devuelve `batch_id`, `status`, `counts`, `created_at`, `finished_at`, `limit`, `offset` y `documents`. El límite predeterminado es 100 y el máximo 500; un lote inexistente devuelve 404. Los contadores abarcan todo el lote, independientemente de la página. `status=completed` indica que todos los trabajos terminaron, incluidos los rechazados o fallidos; una selección vacía termina inmediatamente.
+
+Cada documento incluye `job_id`, `source_key`, `filename`, `status`, `stage`, `result`, `attempts`, fechas, `original_sha256`, `task_ids`, `chunks`, `profile`, `warnings` y `error`. Las fechas son milisegundos UTC desde Unix epoch; `next_attempt_at` indica cuándo vuelve a estar disponible un pendiente.
+
+| Estado del documento | Significado |
+|---|---|
+| `pending` | En cola o esperando un reintento |
+| `processing` | En ejecución |
+| `completed` | Éxito |
+| `completed_with_warnings` | Éxito con advertencias |
+| `rejected` | Entrada no admitida |
+| `failed` | Fallo definitivo o intentos agotados |
+
+`result` es `indexed` o `unchanged` al terminar correctamente. Se persisten las etapas `validation`, `snapshot`, `check_index`, `conversion`, `download`, `tokens`, `rechunk`, `index` y `done`.
+
 ## Consideraciones de operación
 
-- **Ingesta síncrona:** se procesa un archivo a la vez y se admite un lote activo por proceso. La conexión permanece abierta hasta terminar; configura los tiempos de espera del cliente o proxy para conversiones largas. Un lote terminado puede incluir archivos rechazados o fallidos.
+- **Cola:** una instancia de API y un worker procesan un documento a la vez. La API acepta nuevos lotes durante el procesamiento sin exigir que los servicios externos estén disponibles. SQLite conserva lotes, trabajos e intentos sin purga automática.
 - **Identidad documental:** cada documento se identifica por su ruta relativa a `DOCUMENTS_ROOT`. Una ingesta actualiza los documentos seleccionados; los ausentes permanecen en el índice. Renombrar un archivo crea otra identidad.
-- **Persistencia:** los originales permanecen en `DOCUMENTS_ROOT`; Qdrant conserva contenido, embeddings y procedencia. Las copias de trabajo son temporales. La actualización documental no es transaccional: un fallo de escritura puede dejar puntos parciales.
+- **Persistencia:** SQLite usa dos conexiones, claves foráneas, WAL, `synchronous=FULL`, espera de bloqueo de cinco segundos y migraciones incluidas en el binario. Reiniciar la API con la misma `INGESTIONS_DB_PATH` conserva la cola y el historial. SQLite, su WAL y su bloqueo deben permanecer juntos en almacenamiento local. SQLx 0.9.0 incorpora SQLite 3.51.3, fijado en `Cargo.lock`; no requiere instalar un motor externo.
+- **Temporales:** `INGESTIONS_DB_PATH` e `INGESTIONS_TEMP_ROOT` son independientes. Se crea un directorio por intento, se copia el original en bloques de 64 KiB calculando SHA-256 y se elimina el temporal al terminar, fallar o cancelar. Al iniciar se limpian únicamente los directorios propios huérfanos, después de adquirir el bloqueo. El ZIP y los resultados JSON mantienen sus límites en memoria.
+- **Sin cambios:** antes de Docling se consulta Qdrant por `source_key`, sin vectores y con un índice de payload. Solo se omite el procesamiento cuando hash original, perfil, pipeline, modelo, IDs y posiciones de todos los chunks son coherentes. Un índice incompleto, antiguo o mezclado obliga a procesar; una consulta fallida es un error. El hash original no identifica el documento: su identidad combina corpus y ruta.
+- **Reintentos:** hasta tres intentos para errores de transporte, HTTP 408/429/5xx y estados gRPC transitorios; esperas de 10 y 60 segundos que permiten avanzar a otros trabajos. Errores de entrada o configuración son terminales. Cada intento conserva su informe y tareas Docling en SQLite.
+- **Recuperación:** los trabajos interrumpidos se reconcilian con Qdrant antes de reconvertir o agotar sus intentos. Si esa consulta falla transitoriamente, se vuelve a consultar diez segundos después sin iniciar otra conversión. Al apagar se dejan de tomar trabajos y se conceden 30 segundos al activo. Un error de persistencia detiene el worker y el servidor supervisado.
+- **Efectos externos:** puede haber repetición de operaciones tras un fallo; no se garantiza ejecución exactamente una vez. Un timeout local no cancela necesariamente la tarea remota de Docling. La actualización en Qdrant no es transaccional y puede dejar puntos parciales, que se detectan al reintentar.
 - **Conversión:** el OCR extrae texto de imágenes; no genera descripciones de fotografías. TEI valida el tamaño de los fragmentos sin truncarlos y, si es necesario, se solicita a Docling que vuelva a fragmentar. Un documento sin fragmentos utilizables no se indexa.
 - **Respuestas:** las citas remiten a fragmentos recuperados. La validación comprueba el formato y la existencia de las referencias, pero no garantiza que cada afirmación esté respaldada por ellas.
 
@@ -108,7 +150,7 @@ La implementación se organiza por responsabilidad:
 | Módulo | Responsabilidad |
 |---|---|
 | `server` | Servidor HTTP, OpenAPI y Scalar |
-| `ingestions` | Selección de originales y ejecución de lotes |
+| `ingestions` | Selección de originales, SQLite, recuperación y worker |
 | `docling` | Conversión, formatos y procedencia |
 | `ingest` | Preparación de fragmentos e indexación |
 | `answer` | Recuperación de contexto, generación y citas |

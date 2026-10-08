@@ -9,7 +9,7 @@ use tonic::{
     transport::{Channel, Endpoint},
 };
 
-mod proto {
+pub(crate) mod proto {
     tonic::include_proto!("tei.v1");
 }
 
@@ -195,7 +195,7 @@ impl EmbeddingModel for TeiModel {
                     move |request| async move { client.embed(request).await },
                 )
                 .await
-                .map_err(|error| EmbeddingError::ResponseError(format!("{error:#}")))?;
+                .map_err(embedding_error)?;
                 let vec: Vec<f64> = response.embeddings.into_iter().map(f64::from).collect();
                 if vec.len() != dimension || vec.iter().any(|value| !value.is_finite()) {
                     return Err(EmbeddingError::ResponseError(format!(
@@ -210,4 +210,21 @@ impl EmbeddingModel for TeiModel {
         });
         try_join_all(requests).await
     }
+}
+
+/// Keep the original root error as a source; boxing anyhow directly erases its downcast identity.
+#[derive(Debug)]
+struct EmbeddingFailure(anyhow::Error);
+impl std::fmt::Display for EmbeddingFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.0)
+    }
+}
+impl std::error::Error for EmbeddingFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+pub(crate) fn embedding_error(error: anyhow::Error) -> EmbeddingError {
+    EmbeddingError::DocumentError(Box::new(EmbeddingFailure(error)))
 }

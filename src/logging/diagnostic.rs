@@ -10,6 +10,10 @@ pub(crate) struct HttpFailure {
 }
 
 impl HttpFailure {
+    pub(crate) fn status(&self) -> u16 {
+        self.status
+    }
+
     pub(crate) fn new(status: u16, message: String) -> Self {
         Self { status, message }
     }

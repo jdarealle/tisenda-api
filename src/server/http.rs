@@ -1,15 +1,18 @@
 use super::{ServerConfig, docs::RequestIdHeader};
 use crate::{
     AnswerRequest, Config, answer,
-    ingestions::{BatchResult, Manager, Selection},
+    ingestions::{AcceptedBatch, BatchResult, Manager, Pagination, Selection, Worker},
     logging::Failure,
     qdrant,
 };
 use anyhow::Result;
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, State, rejection::JsonRejection},
-    http::StatusCode,
+    extract::{
+        DefaultBodyLimit, Path, Query, State,
+        rejection::{JsonRejection, QueryRejection},
+    },
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -20,12 +23,12 @@ use utoipa::{OpenApi, ToSchema};
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Tisenda API", description = "Ingesta de documentos y consultas con fuentes. Los cuerpos JSON admiten hasta 256 KiB."),
-    paths(health, query, ingest_batch),
+    paths(health, query, ingest_batch, get_batch),
     modifiers(&RequestIdHeader),
     tags(
         (name = "Salud", description = "Disponibilidad HTTP"),
         (name = "Consultas", description = "Respuestas con referencias documentales"),
-        (name = "Ingesta", description = "Procesamiento síncrono de originales")
+        (name = "Ingesta", description = "Cola persistente y procesamiento secuencial de originales")
     )
 )]
 pub(super) struct ApiDoc;
@@ -60,6 +63,7 @@ async fn health() -> Response {
 struct AppState {
     config: Config,
     ingestions: Arc<Manager>,
+    worker: Arc<Worker>,
 }
 
 struct ApiError(StatusCode, String, Failure);
@@ -86,47 +90,68 @@ impl IntoResponse for ApiError {
     }
 }
 
-pub fn router(config: Config, mut server: ServerConfig) -> Result<Router> {
-    server.validate(&config)?;
+/// Initialize persistent storage and start the supervised ingestion worker.
+/// Dropping the router cancels its worker; serve() additionally handles graceful shutdown.
+pub async fn router(config: Config, server: ServerConfig) -> Result<Router> {
+    Ok(build_router(config, server).await?.0)
+}
+
+async fn build_router(config: Config, server: ServerConfig) -> Result<(Router, Arc<Worker>)> {
+    let ingestions = Arc::new(Manager::new(config.clone(), server).await?);
+    let worker = Worker::start(ingestions.clone());
     let state = Arc::new(AppState {
-        ingestions: Arc::new(Manager::new(config.clone(), server)?),
+        ingestions,
         config,
+        worker: worker.clone(),
     });
-    Ok(super::logging::instrument(
+    let app = super::logging::instrument(
         Router::new()
             .route("/health", get(health))
             .route("/query", post(query))
             .route("/ingestions", post(ingest_batch))
+            .route("/ingestions/{batch_id}", get(get_batch))
             .layer(DefaultBodyLimit::max(256 * 1024))
             .with_state(state)
             .merge(super::docs::router()?),
-    ))
+    );
+    Ok((app, worker))
 }
 
 pub async fn serve(config: Config, server: ServerConfig) -> Result<()> {
     let address = server.listen;
-    let app =
-        crate::logging::operation("api", "initialize_router", async { router(config, server) })
-            .await?;
-    let listener = crate::logging::operation("api", "bind_listener", async {
-        Ok(tokio::net::TcpListener::bind(address).await?)
-    })
-    .await?;
+    let listener = tokio::net::TcpListener::bind(address).await?;
     #[cfg(unix)]
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let (app, worker) = build_router(config, server).await?;
+    let stopping = worker.clone();
     tracing::info!(event = "server_listening", address = %listener.local_addr()?);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            #[cfg(unix)]
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {},
-                _ = terminate.recv() => {},
-            }
-            #[cfg(not(unix))]
-            let _ = tokio::signal::ctrl_c().await;
-            tracing::info!(event = "server_stopping");
-        })
-        .await?;
+    let result = axum::serve(listener, app).with_graceful_shutdown(async move {
+        tokio::select! {
+            _ = async {
+                #[cfg(unix)]
+                tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
+                #[cfg(not(unix))]
+                let _ = tokio::signal::ctrl_c().await;
+            } => {},
+            _ = stopping.wait_stopped() => {},
+        }
+        stopping.stop();
+        tracing::info!(event = "server_stopping");
+    });
+    // Start the worker grace period at the signal, independently of open HTTP connections.
+    let graceful_worker = worker.clone();
+    let shutdown = async move {
+        graceful_worker.wait_shutdown_requested().await;
+        graceful_worker.shutdown().await
+    };
+    let serving = async {
+        let result = result.await;
+        worker.stop();
+        result
+    };
+    let (http_result, worker_result) = tokio::join!(serving, shutdown);
+    http_result?;
+    worker_result?;
     tracing::info!(event = "server_stopped");
     Ok(())
 }
@@ -210,14 +235,11 @@ fn query_error(error: anyhow::Error) -> ApiError {
     ApiError::caused(StatusCode::BAD_GATEWAY, message, code, &error)
 }
 
-/// Procesar una selección de documentos hasta terminar el lote.
+/// Aceptar un lote después de persistir su selección.
 ///
-/// {} o paths vacío selecciona toda la raíz. Las rutas son relativas a DOCUMENTS_ROOT;
-/// se rechazan rutas ocultas, absolutas, con .. o enlaces simbólicos. La selección
-/// se ordena y deduplica. Solo se admite un lote activo por proceso.
-/// La conexión permanece abierta durante el procesamiento: un 200 puede incluir
-/// archivos rechazados o fallidos. El cuerpo admite hasta 256 KiB; los rechazos
-/// JSON (incluido el exceso de tamaño) se convierten en 400.
+/// {} o paths vacío selecciona toda DOCUMENTS_ROOT. Las rutas se normalizan,
+/// ordenan y deduplican al aceptar; su contenido se lee cuando llega su turno.
+/// Puede aceptar otros lotes mientras el worker procesa un documento.
 #[utoipa::path(
     post, path = "/ingestions", tag = "Ingesta",
     request_body(content = Selection, examples(
@@ -225,17 +247,16 @@ fn query_error(error: anyhow::Error) -> ApiError {
         ("Selección" = (value = json!({"paths": ["manual.pdf", "catalogos"]})))
     )),
     responses(
-        (status = 200, description = "Lote terminado; revisar los resultados individuales. Una selección vacía devuelve contadores en cero", body = BatchResult),
-        (status = 400, description = "JSON, tamaño del cuerpo o selección inválidos", body = ErrorResponse),
-        (status = 409, description = "Esquema del índice incompatible", body = ErrorResponse),
-        (status = 502, description = "Falló la comprobación del índice", body = ErrorResponse),
-        (status = 503, description = "Ya existe un lote activo", body = ErrorResponse)
+        (status = 202, description = "Lote persistido; consultar Location", body = AcceptedBatch, headers(("Location" = String, description = "URL del estado del lote"))),
+        (status = 400, description = "JSON o selección inválidos", body = ErrorResponse),
+        (status = 500, description = "No se pudo persistir el lote", body = ErrorResponse),
+        (status = 503, description = "Worker detenido", body = ErrorResponse)
     )
 )]
 async fn ingest_batch(
     State(state): State<Arc<AppState>>,
     payload: Result<Json<Selection>, JsonRejection>,
-) -> Result<Json<BatchResult>, ApiError> {
+) -> Result<Response, ApiError> {
     let Json(selection) = payload.map_err(|_| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -243,13 +264,13 @@ async fn ingest_batch(
             "invalid_selection_json",
         )
     })?;
-    let _permit = state.ingestions.reserve().map_err(|e| {
-        ApiError::new(
+    if !state.worker.running() {
+        return Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            e.to_string(),
-            "ingestion_busy",
-        )
-    })?;
+            "Worker detenido".into(),
+            "worker_stopped",
+        ));
+    }
     let keys = state.ingestions.select(selection).await.map_err(|e| {
         ApiError::caused(
             StatusCode::BAD_REQUEST,
@@ -258,26 +279,67 @@ async fn ingest_batch(
             &e,
         )
     })?;
-    // Rejected-only batches need no conversion or vector service access.
-    if keys
-        .iter()
-        .any(|key| crate::docling::input_format(key).is_some())
-    {
-        let incompatibility = state.ingestions.check_index().await.map_err(|e| {
+    let accepted = state.ingestions.enqueue(keys).await.map_err(|e| {
+        state.worker.stop();
+        ApiError::caused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "No se pudo persistir el lote".into(),
+            "ingestion_store_failed",
+            &e,
+        )
+    })?;
+    Ok((
+        StatusCode::ACCEPTED,
+        [(header::LOCATION, accepted.status_url.clone())],
+        Json(accepted),
+    )
+        .into_response())
+}
+
+/// Consultar progreso y documentos en orden de selección, con una página de hasta 500.
+/// Los contadores abarcan todo el lote; completed indica que todos sus trabajos son terminales.
+#[utoipa::path(
+    get, path = "/ingestions/{batch_id}", tag = "Ingesta",
+    params(("batch_id" = String, Path, description = "Identificador del lote"), Pagination),
+    responses(
+        (status = 200, description = "Progreso y página de documentos", body = BatchResult),
+        (status = 400, description = "Paginación inválida", body = ErrorResponse),
+        (status = 404, description = "Lote inexistente", body = ErrorResponse),
+        (status = 500, description = "No se pudo consultar SQLite", body = ErrorResponse)
+    )
+)]
+async fn get_batch(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    page: Result<Query<Pagination>, QueryRejection>,
+) -> Result<Json<BatchResult>, ApiError> {
+    let Query(page) = page.map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Paginación inválida".into(),
+            "invalid_pagination",
+        )
+    })?;
+    page.validate()
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e.to_string(), "invalid_pagination"))?;
+    state
+        .ingestions
+        .batch(&id, &page)
+        .await
+        .map_err(|e| {
             ApiError::caused(
-                StatusCode::BAD_GATEWAY,
-                format!("{e:#}"),
-                "index_check_failed",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "No se pudo consultar el lote".into(),
+                "ingestion_store_failed",
                 &e,
             )
-        })?;
-        if let Some(message) = incompatibility {
-            return Err(ApiError::new(
-                StatusCode::CONFLICT,
-                message,
-                "index_incompatible",
-            ));
-        }
-    }
-    Ok(Json(state.ingestions.run(keys).await))
+        })?
+        .map(Json)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "Lote inexistente".into(),
+                "batch_not_found",
+            )
+        })
 }
