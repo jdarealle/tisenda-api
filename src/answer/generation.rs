@@ -3,11 +3,7 @@ use super::{
 };
 use crate::Config;
 use anyhow::{Context, Result, bail};
-use rig::{
-    client::CompletionClient,
-    completion::{AssistantContent, CompletionModel},
-    providers::openai,
-};
+use rig::{completion::AssistantContent, providers::openai::OpenAI};
 use std::future::Future;
 
 #[tracing::instrument(skip_all, name = "generation")]
@@ -26,13 +22,13 @@ pub(super) async fn generate(
     if key.trim().is_empty() || key == "CHANGE_ME" {
         bail!("Configura OPENAI_API_KEY para generar respuestas");
     }
-    let client = openai::Client::new(key)?;
-    let model = client.completion_model(&config.openai_model);
+    let model = OpenAI::new(key).responses(&config.openai_model);
     generate_with(question, context, |prompt| async {
         let response = model
-            .completion(model.completion_request(prompt).build())
+            .call(prompt)
             .await
             .context("Falló la generación de la respuesta")?;
+        // response.text() concatenates without separators; preserve our public line breaks.
         Ok(response
             .choice
             .into_iter()

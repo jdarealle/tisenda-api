@@ -12,7 +12,7 @@ use qdrant_client::{
         UpsertPointsBuilder, VectorParamsBuilder, vectors_config::Config as VectorConfig,
     },
 };
-use rig_qdrant::QdrantVectorStore;
+use rig::qdrant::QdrantVectorStore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -93,14 +93,10 @@ pub(crate) fn client(config: &Config) -> Result<Qdrant> {
         .context("No se pudo crear el cliente Qdrant")
 }
 
-pub(crate) fn store(
-    client: Qdrant,
-    model: TeiModel,
-    collection: &str,
-) -> QdrantVectorStore<TeiModel> {
+pub(crate) fn store(client: Qdrant, model: TeiModel, collection: &str) -> QdrantVectorStore {
     QdrantVectorStore::new(
         client,
-        model,
+        model.embeddings(),
         QueryPointsBuilder::new(collection)
             .with_payload(true)
             .build(),

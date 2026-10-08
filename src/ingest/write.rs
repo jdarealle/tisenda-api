@@ -2,7 +2,7 @@ use super::{index_state, plan};
 use crate::{Config, qdrant, tei::TeiModel};
 use anyhow::{Context, Result, bail};
 use qdrant_client::{Payload, qdrant::PointStruct};
-use rig::embeddings::{EmbeddingModel, EmbeddingsBuilder};
+use rig::embeddings::EmbeddingsBuilder;
 
 pub(super) async fn documents(
     client: &qdrant_client::Qdrant,
@@ -18,7 +18,7 @@ pub(super) async fn documents(
             if let Some(progress) = progress {
                 progress.check()?;
             }
-            let embedded = EmbeddingsBuilder::new(model.clone())
+            let embedded = EmbeddingsBuilder::new(model.embeddings())
                 .documents(batch.to_vec())?
                 .build()
                 .await

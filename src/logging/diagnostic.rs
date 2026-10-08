@@ -2,6 +2,22 @@ use anyhow::Result;
 use std::{future::Future, time::Instant};
 use tracing::Instrument;
 
+/// Rig owns transport errors behind an Arc but does not expose them through source().
+/// Follow that boundary explicitly so gRPC statuses and local timeouts remain typed.
+pub(crate) fn causes<'a>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> impl Iterator<Item = &'a (dyn std::error::Error + 'static)> {
+    std::iter::successors(Some(error), |cause| {
+        if let Some(rig::ProviderError::Http(transport)) =
+            cause.downcast_ref::<rig::ProviderError>()
+        {
+            Some(transport.as_ref() as &(dyn std::error::Error + 'static))
+        } else {
+            cause.source()
+        }
+    })
+}
+
 /// Conserva el error HTTP existente para el llamador y expone su estado al logger.
 /// El mensaje nunca se copia a Failure.
 pub(crate) struct HttpFailure {
@@ -58,7 +74,14 @@ impl Failure {
 
     pub(crate) fn from_error(code: &'static str, error: &anyhow::Error) -> Self {
         let mut failure = Self::new(code);
-        for cause in error.chain() {
+        for cause in causes(error.as_ref()) {
+            if let Some(error) = cause.downcast_ref::<rig::ProviderError>() {
+                failure.kind = error.kind().code();
+                failure.http_status = error
+                    .provider_response_status()
+                    .map(|status| status.as_u16());
+                // Keep walking: an original gRPC status or timeout is more specific.
+            }
             if let Some(error) = cause.downcast_ref::<HttpFailure>() {
                 failure.kind = "http";
                 failure.http_status = Some(error.status);

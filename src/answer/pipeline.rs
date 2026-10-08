@@ -1,8 +1,10 @@
 use super::{Answer, AnswerRequest, context, generation};
 use crate::{Config, documents::Chunk, qdrant, tei::TeiModel};
 use anyhow::{Context, Result, bail};
-use rig::vector_store::{VectorStoreIndex, request::VectorSearchRequest};
-use rig_qdrant::QdrantFilter;
+use rig::{
+    qdrant::QdrantFilter,
+    vector_store::{VectorSearchResult, VectorStoreIndex, request::VectorSearchRequest},
+};
 
 #[tracing::instrument(skip_all, name = "query", fields(query_id = %uuid::Uuid::new_v4()))]
 pub async fn answer(config: &Config, request: AnswerRequest) -> Result<Answer> {
@@ -44,13 +46,14 @@ async fn answer_inner(config: &Config, request: AnswerRequest) -> Result<Answer>
         .query(question)
         .samples((top_k * 2).min(50) as u64)
         .build();
-    let results: Vec<(f64, String, Chunk)> = crate::logging::operation("qdrant", "search", async {
-        store
-            .top_n(search)
-            .await
-            .context("Falló la búsqueda en Qdrant")
-    })
-    .await?;
+    let results: Vec<VectorSearchResult<Chunk>> =
+        crate::logging::operation("qdrant", "search", async {
+            store
+                .top_n(search)
+                .await
+                .context("Falló la búsqueda en Qdrant")
+        })
+        .await?;
     tracing::debug!(
         event = "retrieval_completed",
         candidates = results.len(),

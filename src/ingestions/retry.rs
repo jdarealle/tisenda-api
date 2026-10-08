@@ -2,7 +2,7 @@ use anyhow::Error;
 use qdrant_client::QdrantError;
 
 pub(super) fn transient(error: &Error) -> bool {
-    error.chain().any(cause_transient)
+    crate::logging::causes(error.as_ref()).any(cause_transient)
 }
 fn cause_transient(cause: &(dyn std::error::Error + 'static)) -> bool {
     if let Some(e) = cause.downcast_ref::<crate::logging::HttpFailure>() {
@@ -23,16 +23,20 @@ fn cause_transient(cause: &(dyn std::error::Error + 'static)) -> bool {
     {
         return grpc(status.code());
     }
-    if let Some(rig::embeddings::EmbeddingError::DocumentError(e)) =
-        cause.downcast_ref::<rig::embeddings::EmbeddingError>()
-    {
-        let mut current = Some(e.as_ref() as &(dyn std::error::Error + 'static));
-        while let Some(e) = current {
-            if cause_transient(e) {
-                return true;
+    if let Some(error) = cause.downcast_ref::<rig::ProviderError>() {
+        if let rig::ProviderError::Http(transport) = error {
+            // Rig treats every Instance as transient. A preserved gRPC or reqwest
+            // error carries a more precise verdict, including permanent failures.
+            for source in crate::logging::causes(transport.as_ref()) {
+                if let Some(status) = source.downcast_ref::<tonic::Status>() {
+                    return grpc(status.code());
+                }
+                if let Some(error) = source.downcast_ref::<reqwest::Error>() {
+                    return cause_transient(error);
+                }
             }
-            current = e.source();
         }
+        return error.is_retryable();
     }
     cause.is::<tokio::time::error::Elapsed>() || cause.is::<ConversionTimeout>()
 }

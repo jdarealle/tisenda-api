@@ -1,5 +1,6 @@
 use super::{Source, SourceLocation};
 use crate::documents::Chunk;
+use rig::vector_store::VectorSearchResult;
 use std::{collections::HashMap, path::Path};
 
 const MAX_CONTEXT_BYTES: usize = 12_000;
@@ -20,11 +21,16 @@ impl PreparedContext {
     }
 }
 
-pub(super) fn prepare(results: Vec<(f64, String, Chunk)>, top_k: usize) -> PreparedContext {
+pub(super) fn prepare(results: Vec<VectorSearchResult<Chunk>>, top_k: usize) -> PreparedContext {
     let mut sources = Vec::new();
     let mut context = String::new();
     let mut per_file: HashMap<String, usize> = HashMap::new();
-    for (score, _, chunk) in results {
+    for VectorSearchResult {
+        score,
+        document: chunk,
+        ..
+    } in results
+    {
         if score < 0.25 || sources.len() >= top_k {
             break;
         }
