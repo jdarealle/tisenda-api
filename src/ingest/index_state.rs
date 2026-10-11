@@ -12,7 +12,7 @@ use std::{
 };
 use uuid::Uuid;
 
-pub(super) type Manifest = BTreeMap<String, Vec<StoredPoint>>;
+pub(super) type Manifest = BTreeMap<Uuid, Vec<StoredPoint>>;
 
 #[derive(Deserialize)]
 pub(super) struct StoredChunk {
@@ -24,7 +24,7 @@ pub(super) struct StoredChunk {
     pub(super) embedding_model: String,
     pub(super) embedding_dimension: usize,
     pub(super) embedding_preprocessing: String,
-    pub(super) document_id: String,
+    pub(super) document_id: Uuid,
     pub(super) pipeline_version: String,
     pub(super) document_chunk_count: usize,
     #[serde(default)]
@@ -34,10 +34,6 @@ pub(super) struct StoredChunk {
 pub(super) struct StoredPoint {
     pub(super) id: PointId,
     pub(super) chunk: StoredChunk,
-}
-
-pub(super) fn document_id(corpus: &Uuid, source_key: &str) -> Uuid {
-    Uuid::new_v5(corpus, source_key.as_bytes())
 }
 
 pub(super) fn chunk_id(document: &Uuid, chunk_index: usize) -> PointId {
@@ -146,11 +142,8 @@ pub(super) async fn read_manifest(
                 super::validate_filename(&chunk.filename)
                     .context("La colección contiene un nombre de documento inválido")?;
                 super::validate_source_key(&chunk.source_key)?;
-                if chunk.source_key.rsplit('/').next() != Some(chunk.filename.as_str()) {
-                    bail!("source_key incompatible con el nombre del documento indexado");
-                }
                 manifest
-                    .entry(chunk.source_key.clone())
+                    .entry(chunk.document_id)
                     .or_default()
                     .push(StoredPoint { id, chunk });
             }
@@ -162,6 +155,23 @@ pub(super) async fn read_manifest(
         Ok(manifest)
     })
     .await
+}
+
+/// A lost/replaced catalog must never silently claim a source already indexed with another ID.
+pub(super) fn ensure_source_identity<'a>(
+    document_id: Uuid,
+    source_key: &str,
+    points: impl IntoIterator<Item = &'a StoredPoint>,
+) -> Result<()> {
+    for point in points {
+        if point.chunk.source_key == source_key && point.chunk.document_id != document_id {
+            bail!(
+                "Conflicto de identidad: source_key {source_key} ya está indexada con document_id {} y el catálogo proporciona {document_id}. Restaura el catálogo correspondiente o reconstruye el índice desde el catálogo actual",
+                point.chunk.document_id
+            );
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn unchanged(
@@ -184,7 +194,6 @@ pub(super) fn written(
     if expected == 0 {
         return false;
     }
-    let document_id = id.to_string();
     let mut positions = BTreeSet::new();
     for point in points {
         let chunk = &point.chunk;
@@ -194,7 +203,7 @@ pub(super) fn written(
         }
         if chunk.source_key != document.source_key
             || chunk.content_hash != document.content_hash
-            || chunk.document_id != document_id
+            || chunk.document_id != *id
             || chunk.pipeline_version != pipeline
             || chunk.document_chunk_count != expected
             || !provenance_matches(document, chunk)

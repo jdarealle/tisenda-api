@@ -1,3 +1,9 @@
+CREATE TABLE documents (
+    id TEXT PRIMARY KEY NOT NULL,
+    source_key TEXT UNIQUE NOT NULL,
+    filename TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
 CREATE TABLE batches (
     id TEXT PRIMARY KEY NOT NULL,
     created_at INTEGER NOT NULL,
@@ -7,10 +13,12 @@ CREATE TABLE jobs (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     id TEXT UNIQUE NOT NULL,
     batch_id TEXT NOT NULL REFERENCES batches(id),
+    document_id TEXT NOT NULL REFERENCES documents(id),
     ordinal INTEGER NOT NULL,
     source_key TEXT NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('pending','processing','completed','completed_with_warnings','rejected','failed')),
-    report TEXT NOT NULL CHECK(json_valid(report)),
+    report TEXT NOT NULL CHECK(json_valid(report))
+        CHECK(json_extract(report, '$.document_id') IS document_id),
     attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 3),
     recover INTEGER NOT NULL DEFAULT 0,
     available_at INTEGER NOT NULL,

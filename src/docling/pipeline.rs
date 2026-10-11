@@ -141,6 +141,7 @@ async fn finish(
     let results = ingest_with_progress(
         config,
         vec![IngestDocument {
+            document_id: report.document_id,
             filename: report.filename.clone(),
             source_key: report.source_key.clone(),
             chunks,

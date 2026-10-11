@@ -235,11 +235,13 @@ fn query_error(error: anyhow::Error) -> ApiError {
     ApiError::caused(StatusCode::BAD_GATEWAY, message, code, &error)
 }
 
-/// Aceptar un lote después de persistir su selección.
+/// Aceptar un lote después de registrar sus documentos y persistir su selección.
 ///
 /// {} o paths vacío selecciona toda DOCUMENTS_ROOT. Las rutas se normalizan,
 /// ordenan y deduplican al aceptar; su contenido se lee cuando llega su turno.
 /// Puede aceptar otros lotes mientras el worker procesa un documento.
+/// El catálogo asigna o reutiliza document_id por source_key en la misma transacción;
+/// aceptar el lote no requiere que Docling, TEI o Qdrant estén disponibles.
 #[utoipa::path(
     post, path = "/ingestions", tag = "Ingesta",
     request_body(content = Selection, examples(

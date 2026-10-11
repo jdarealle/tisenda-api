@@ -1,6 +1,7 @@
 use crate::DoclingChunk;
 use anyhow::Result;
 use serde::Serialize;
+use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IngestReport {
@@ -12,9 +13,11 @@ pub struct IngestReport {
     pub chunks_written: usize,
 }
 
-/// A converted document. Its source key is relative to the configured root and identifies it within the corpus.
+/// A converted document with a persistent, caller-assigned identity.
+/// Reuse the same ID on retries and updates; source_key is only a relative locator.
 #[derive(Clone, Debug)]
 pub struct IngestDocument {
+    pub document_id: Uuid,
     pub filename: String,
     pub source_key: String,
     pub chunks: Vec<DoclingChunk>,
@@ -22,6 +25,7 @@ pub struct IngestDocument {
 
 #[derive(Debug)]
 pub struct DocumentIngestResult {
+    pub document_id: Uuid,
     pub filename: String,
     pub source_key: String,
     pub result: Result<IngestReport>,

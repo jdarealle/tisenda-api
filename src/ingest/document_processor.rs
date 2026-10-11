@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 pub(super) fn prepare(config: &Config, doc: IngestDocument) -> Result<Document> {
     let filename = doc.filename;
     validate_source_key(&doc.source_key)?;
-    if doc.source_key.rsplit('/').next() != Some(filename.as_str()) {
-        bail!("El nombre no coincide con source_key");
+    if doc.document_id.is_nil() || doc.document_id.is_max() {
+        bail!("El documento debe tener una identidad persistente válida");
     }
     validate_chunks(&filename, &doc.chunks)?;
     let mut canonical = serde_json::to_value(&doc.chunks)?;
@@ -18,6 +18,7 @@ pub(super) fn prepare(config: &Config, doc: IngestDocument) -> Result<Document> 
     }
     let content_hash = format!("{:x}", Sha256::digest(&bytes));
     Ok(Document {
+        document_id: doc.document_id,
         filename,
         source_key: doc.source_key,
         chunks: doc.chunks,
@@ -37,7 +38,7 @@ pub(crate) fn validate_filename(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Portable normalized identity relative to the source root.
+/// Portable normalized locator relative to the source root; independent of document identity.
 pub(crate) fn validate_source_key(key: &str) -> Result<()> {
     if key.is_empty()
         || key

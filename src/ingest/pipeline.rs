@@ -20,22 +20,29 @@ pub(crate) async fn ingest_with_progress(
 ) -> Vec<DocumentIngestResult> {
     let mut results = Vec::with_capacity(documents.len());
     let mut names = std::collections::HashMap::new();
+    let mut ids = std::collections::HashMap::new();
     for doc in &documents {
         *names.entry(doc.source_key.clone()).or_insert(0usize) += 1;
+        *ids.entry(doc.document_id).or_insert(0usize) += 1;
     }
     for doc in documents {
         let filename = doc.filename.clone();
         let source_key = doc.source_key.clone();
+        let document_id = doc.document_id;
         let result = async {
             document_processor::validate_filename(&filename)?;
             if names[&source_key] != 1 {
                 bail!("source_key duplicada");
+            }
+            if ids[&document_id] != 1 {
+                bail!("document_id duplicado");
             }
             let document = document_processor::prepare(config, doc)?;
             ingest_document(config, document, progress).await
         }
         .await;
         results.push(DocumentIngestResult {
+            document_id,
             filename,
             source_key,
             result,
@@ -77,18 +84,21 @@ async fn ingest_document(
     binding.validate_model(config, &identity)?;
     binding.validate_source(config)?;
     binding.validate_ingestion()?;
-    let corpus = binding.corpus_id()?;
     let manifest = if exists {
         index_state::read_manifest(&client, config, &collection).await?
     } else {
         index_state::Manifest::new()
     };
+    index_state::ensure_source_identity(
+        document.document_id,
+        &document.source_key,
+        manifest.values().flatten(),
+    )?;
     let pipeline = index_state::pipeline_version(config, &identity);
     let plan = plan::build(
         config,
         std::slice::from_ref(&document),
         &manifest,
-        &corpus,
         &pipeline,
     );
     if !plan.changed.is_empty() {
@@ -121,7 +131,7 @@ async fn ingest_document(
     if !exists {
         qdrant::create_collection(&client, config, &collection, &binding).await?;
     }
-    qdrant::ensure_source_index(&client, &collection).await?;
+    qdrant::ensure_document_indexes(&client, &collection).await?;
     let chunks_written = write::documents(
         &client,
         &model,
@@ -136,18 +146,15 @@ async fn ingest_document(
     if !plan.changed.is_empty() {
         let confirmed = index_state::read_manifest(&client, config, &collection).await?;
         for document in &plan.changed {
-            if !confirmed
-                .get(&document.source.source_key)
-                .is_some_and(|points| {
-                    index_state::written(
-                        document.source,
-                        &document.id,
-                        &pipeline,
-                        document.chunks.len(),
-                        points,
-                    )
-                })
-            {
+            if !confirmed.get(&document.id).is_some_and(|points| {
+                index_state::written(
+                    document.source,
+                    &document.id,
+                    &pipeline,
+                    document.chunks.len(),
+                    points,
+                )
+            }) {
                 bail!(
                     "Qdrant no confirmó todos los fragmentos de {}; se conservan los puntos sobrantes",
                     document.source.filename
@@ -179,6 +186,7 @@ async fn ingest_document(
     write::ensure_alias(&client, config, Some(collection.as_str())).await?;
     tracing::debug!(
         event = "index_document_completed",
+        document_id = %document.document_id,
         chunks_written,
         files_new = plan.files_new,
         files_updated = plan.files_updated,

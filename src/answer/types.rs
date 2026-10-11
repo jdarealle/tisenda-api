@@ -16,11 +16,13 @@ pub struct AnswerRequest {
     pub question: String,
 }
 
-/// Fragmento citado; el identificador es local a esta respuesta, no al índice.
+/// Fragmento citado con marcador local e identidad estable del documento.
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct Source {
     /// Cadena numérica que vincula esta fuente con un marcador [n] del texto.
     pub id: String,
+    /// Identidad estable del documento original en el catálogo.
+    pub document_id: uuid::Uuid,
     /// Nombre visible del archivo original.
     pub filename: String,
     /// Ruta relativa del original dentro de la raíz documental.
@@ -50,6 +52,7 @@ pub struct SourceLocation {
     "text": "Apaga la impresora antes de sustituir el cartucho. [1]",
     "sources": [{
         "id": "1",
+        "document_id": "019934a0-22c0-7000-8000-000000000001",
         "filename": "manual-impresora.pdf",
         "source_key": "impresoras/manual-impresora.pdf",
         "location": { "kind": "page", "page_numbers": [12], "headings": ["Mantenimiento"] },

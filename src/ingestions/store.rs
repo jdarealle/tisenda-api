@@ -80,17 +80,6 @@ impl Store {
             !temp_root.is_symlink(),
             "El directorio temporal no puede ser un enlace"
         );
-        let mut entries = tokio::fs::read_dir(&temp_root).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            if entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("rag-document-")
-                && entry.file_type().await?.is_dir()
-            {
-                tokio::fs::remove_dir_all(entry.path()).await?;
-            }
-        }
         let options = SqliteConnectOptions::new()
             .filename(&path)
             .create_if_missing(true)
@@ -102,7 +91,28 @@ impl Store {
             .max_connections(2)
             .connect_with(options)
             .await?;
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        if let Err(error) = sqlx::migrate!("./migrations").run(&pool).await {
+            if matches!(error, sqlx::migrate::MigrateError::VersionMismatch(_)) {
+                tracing::error!(
+                    event = "catalog_schema_incompatible",
+                    "SQLite usa un esquema anterior: reinicializa el prototipo según el README; conserva los originales"
+                );
+                return Err(error).context("SQLite usa un esquema anterior al catálogo documental. Reinicializa el prototipo según el README; no se borran datos automáticamente");
+            }
+            return Err(error.into());
+        }
+        // Only clean interrupted attempts once the database schema is accepted.
+        let mut entries = tokio::fs::read_dir(&temp_root).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("rag-document-")
+                && entry.file_type().await?.is_dir()
+            {
+                tokio::fs::remove_dir_all(entry.path()).await?;
+            }
+        }
         let version: String = sqlx::query_scalar("SELECT sqlite_version()")
             .fetch_one(&pool)
             .await?;
@@ -126,26 +136,38 @@ impl Store {
         Ok(store)
     }
 
-    pub(super) async fn enqueue(&self, reports: Vec<FileReport>) -> Result<AcceptedBatch> {
+    pub(super) async fn enqueue(
+        &self,
+        keys: Vec<String>,
+        make_report: impl Fn(uuid::Uuid, String) -> FileReport,
+    ) -> Result<AcceptedBatch> {
+        self.check()?;
         let id = uuid::Uuid::new_v4().to_string();
         let timestamp = now();
         let mut tx = self.pool.begin().await?;
         sqlx::query("INSERT INTO batches(id,created_at,finished_at) VALUES(?,?,?)")
             .bind(&id)
             .bind(timestamp)
-            .bind(reports.is_empty().then_some(timestamp))
+            .bind(keys.is_empty().then_some(timestamp))
             .execute(&mut *tx)
             .await?;
-        for (ordinal, report) in reports.iter().enumerate() {
-            sqlx::query("INSERT INTO jobs(id,batch_id,ordinal,source_key,status,report,available_at,created_at,updated_at) VALUES(?,?,?,?,'pending',?,?,?,?)")
-                .bind(uuid::Uuid::new_v4().to_string()).bind(&id).bind(ordinal as i64).bind(&report.source_key)
-                .bind(serde_json::to_string(report)?).bind(timestamp).bind(timestamp).bind(timestamp).execute(&mut *tx).await?;
+        let total = keys.len();
+        for (ordinal, key) in keys.into_iter().enumerate() {
+            let document_id = super::catalog::resolve(&mut tx, &key, timestamp).await?;
+            let report = make_report(document_id, key.clone());
+            ensure!(
+                report.document_id == document_id && report.source_key == key,
+                "El informe no corresponde al documento registrado"
+            );
+            sqlx::query("INSERT INTO jobs(id,batch_id,document_id,ordinal,source_key,status,report,available_at,created_at,updated_at) VALUES(?,?,?,?,?,'pending',?,?,?,?)")
+                .bind(uuid::Uuid::new_v4().to_string()).bind(&id).bind(document_id.to_string()).bind(ordinal as i64).bind(&key)
+                .bind(serde_json::to_string(&report)?).bind(timestamp).bind(timestamp).bind(timestamp).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(AcceptedBatch {
             status_url: format!("/ingestions/{id}"),
             batch_id: id,
-            total: reports.len(),
+            total,
         })
     }
 

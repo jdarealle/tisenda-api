@@ -24,7 +24,7 @@ impl PreparedContext {
 pub(super) fn prepare(results: Vec<VectorSearchResult<Chunk>>, top_k: usize) -> PreparedContext {
     let mut sources = Vec::new();
     let mut context = String::new();
-    let mut per_file: HashMap<String, usize> = HashMap::new();
+    let mut per_document: HashMap<uuid::Uuid, usize> = HashMap::new();
     for VectorSearchResult {
         score,
         document: chunk,
@@ -34,11 +34,10 @@ pub(super) fn prepare(results: Vec<VectorSearchResult<Chunk>>, top_k: usize) -> 
         if score < 0.25 || sources.len() >= top_k {
             break;
         }
-        let source_key = chunk
-            .source_key
-            .unwrap_or_else(|| chunk.native.filename.clone());
+        let source_key = chunk.source_key;
+        let document_id = chunk.document_id;
         let chunk = chunk.native;
-        let count = per_file.entry(source_key.clone()).or_default();
+        let count = per_document.entry(document_id).or_default();
         if *count >= 3 {
             continue;
         }
@@ -71,6 +70,7 @@ pub(super) fn prepare(results: Vec<VectorSearchResult<Chunk>>, top_k: usize) -> 
         *count += 1;
         sources.push(Source {
             id,
+            document_id,
             filename: chunk.filename,
             source_key,
             location: SourceLocation {

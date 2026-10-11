@@ -35,7 +35,6 @@ pub(super) async fn documents(
                 if let Some(metadata) = fields.get_mut("metadata") {
                     crate::documents::prepare_qdrant_metadata(metadata);
                 }
-                fields.insert("document_id".into(), document.id.to_string().into());
                 fields.insert("pipeline_version".into(), pipeline.into());
                 fields.insert("document_chunk_count".into(), document.chunks.len().into());
                 let vector: Vec<f32> = embeddings

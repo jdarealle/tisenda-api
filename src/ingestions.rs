@@ -1,5 +1,6 @@
-//! Cola persistente, selección segura y worker secuencial de ingesta.
+//! Catálogo documental, cola persistente, selección segura y worker de ingesta.
 
+mod catalog;
 mod manager;
 mod progress;
 mod retry;

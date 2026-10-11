@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 const METADATA_KEY: &str = "rag_ingest";
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 const CORPUS_SOURCE: &str = "docling-manual";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -43,14 +43,12 @@ impl CollectionBinding {
         }
     }
 
-    pub(crate) fn corpus_id(&self) -> Result<Uuid> {
+    fn corpus_id(&self) -> Result<Uuid> {
         Uuid::parse_str(&self.corpus_id).context("Identidad del corpus inválida")
     }
 
     pub(crate) fn validate_model(&self, config: &Config, identity: &ModelIdentity) -> Result<()> {
-        if !matches!(self.schema_version, 2 | SCHEMA_VERSION) {
-            bail!("Versión de metadatos del índice no compatible");
-        }
+        self.validate_ingestion()?;
         self.corpus_id()?;
         if self.embedding_version != config.embedding_version() || &self.model_identity != identity
         {
@@ -70,7 +68,9 @@ impl CollectionBinding {
 
     pub(crate) fn validate_ingestion(&self) -> Result<()> {
         if self.schema_version != SCHEMA_VERSION {
-            bail!("El esquema del índice no es compatible con la ingesta actual");
+            bail!(
+                "El esquema del índice no es compatible con las identidades del catálogo. Reconstruye el índice según el README; no se modifica la colección anterior"
+            );
         }
         Ok(())
     }
@@ -261,18 +261,17 @@ pub(crate) async fn publish_alias(client: &Qdrant, alias: &str, collection: &str
     .await
 }
 
-/// Idempotent for collections created by earlier versions too.
-pub(crate) async fn ensure_source_index(client: &Qdrant, collection: &str) -> Result<()> {
-    confirm_update(
-        client
-            .create_field_index(
-                CreateFieldIndexCollectionBuilder::new(
-                    collection,
-                    "source_key",
-                    FieldType::Keyword,
+/// Index identity lookups and locator conflict checks.
+pub(crate) async fn ensure_document_indexes(client: &Qdrant, collection: &str) -> Result<()> {
+    for field in ["document_id", "source_key"] {
+        confirm_update(
+            client
+                .create_field_index(
+                    CreateFieldIndexCollectionBuilder::new(collection, field, FieldType::Keyword)
+                        .wait(true),
                 )
-                .wait(true),
-            )
-            .await?,
-    )
+                .await?,
+        )?;
+    }
+    Ok(())
 }

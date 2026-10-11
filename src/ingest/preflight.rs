@@ -15,7 +15,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-/// Read only this source's metadata; never interpret a failed query as absence.
+/// Read document metadata and detect conflicting identities at its current locator.
 pub(crate) async fn original_unchanged(
     config: &Config,
     report: &FileReport,
@@ -38,9 +38,8 @@ pub(crate) async fn original_unchanged(
     binding.validate_source(config)?;
     binding.validate_ingestion()?;
     binding.validate_model(config, &identity)?;
-    let id = index_state::document_id(&binding.corpus_id()?, &report.source_key);
+    let id = report.document_id;
     progress.check()?;
-    qdrant::ensure_source_index(&client, &collection).await?;
     let fields = [
         "filename",
         "source_key",
@@ -61,10 +60,10 @@ pub(crate) async fn original_unchanged(
     loop {
         let mut request = ScrollPointsBuilder::new(&collection)
             .limit(256)
-            .filter(Filter::must([Condition::matches(
-                "source_key",
-                report.source_key.clone(),
-            )]))
+            .filter(Filter::should([
+                Condition::matches("document_id", id.to_string()),
+                Condition::matches("source_key", report.source_key.clone()),
+            ]))
             .with_payload(PayloadIncludeSelector {
                 fields: fields.iter().map(|s| s.to_string()).collect(),
             })
@@ -77,7 +76,7 @@ pub(crate) async fn original_unchanged(
             .await
             .context("No se pudo comprobar el original en Qdrant")?;
         for point in response.result {
-            // Legacy metadata is insufficient evidence of an unchanged document.
+            // Incomplete metadata is insufficient evidence of an unchanged document.
             let Some(id) = point.id else {
                 return Ok(None);
             };
@@ -91,6 +90,7 @@ pub(crate) async fn original_unchanged(
             break;
         }
     }
+    index_state::ensure_source_identity(id, &report.source_key, &points)?;
     let result = complete_original(config, report, &identity, &id, &points);
     super::write::ensure_alias(&client, config, active.as_deref()).await?;
     if result.is_some() && active.is_none() {
@@ -120,14 +120,13 @@ fn complete_original(
     let pipeline = index_state::pipeline_version(config, identity);
     let model = serde_json::to_value(identity).ok()?;
     let version = config.embedding_version();
-    let document_id = id.to_string();
     let mut positions = BTreeSet::new();
     let profile = first.metadata.pointer("/rag/profile")?;
     for point in points {
         let c = &point.chunk;
         if c.filename != report.filename
             || c.source_key != report.source_key
-            || c.document_id != document_id
+            || c.document_id != *id
             || c.chunk_index >= expected
             || point.id != index_state::chunk_id(id, c.chunk_index)
             || !positions.insert(c.chunk_index)

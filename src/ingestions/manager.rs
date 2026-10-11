@@ -44,20 +44,23 @@ impl Manager {
         tokio::task::spawn_blocking(move || root.select(&selection.paths)).await?
     }
     pub(crate) async fn enqueue(&self, keys: Vec<String>) -> Result<AcceptedBatch> {
-        let reports = keys.into_iter().map(|key| self.report(key)).collect();
-        let accepted = self.store.enqueue(reports).await.inspect_err(|_| {
-            self.store.stop();
-        })?;
+        let accepted = self
+            .store
+            .enqueue(keys, |id, key| self.report(id, key))
+            .await
+            .inspect_err(|_| {
+                self.store.stop();
+            })?;
         self.wake.notify_one();
         Ok(accepted)
     }
     pub(crate) async fn batch(&self, id: &str, page: &Pagination) -> Result<Option<BatchResult>> {
         self.store.batch(id, page).await
     }
-    fn report(&self, key: String) -> FileReport {
+    fn report(&self, document_id: uuid::Uuid, key: String) -> FileReport {
         let filename = key.rsplit('/').next().unwrap_or(&key).to_owned();
         let profile = self.client.profile(&self.config, &filename);
-        FileReport::new(filename, key, profile)
+        FileReport::new(document_id, filename, key, profile)
     }
     fn limits(&self) -> ArchiveLimits {
         ArchiveLimits {
@@ -97,7 +100,7 @@ impl Manager {
                 return self.store.finish(&job, None).await;
             }
         }
-        job.report = self.report(job.report.source_key.clone());
+        job.report = self.report(job.report.document_id, job.report.source_key.clone());
         job.report.status = "processing".into();
         self.store.begin_attempt(&mut job).await?;
         let progress = Progress::new(self.store.clone(), job.id.clone(), job.attempts);
@@ -122,6 +125,7 @@ impl Manager {
         tracing::info!(
             event = "ingestion_job_finished",
             job_id = job.id,
+            document_id = %job.report.document_id,
             attempt = job.attempts,
             status = job.report.status,
             result = job.report.result,

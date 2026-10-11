@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
+use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ArchiveLimits {
@@ -19,6 +20,8 @@ pub(crate) struct FileError {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub(crate) struct FileReport {
+    /// Identidad estable del documento, persistida en el catálogo antes de encolar.
+    pub(crate) document_id: Uuid,
     pub(crate) filename: String,
     pub(crate) source_key: String,
     /// pending, processing, completed, completed_with_warnings, rejected o failed.
@@ -41,8 +44,14 @@ pub(crate) struct FileReport {
 }
 
 impl FileReport {
-    pub(crate) fn new(filename: String, source_key: String, profile: Value) -> Self {
+    pub(crate) fn new(
+        document_id: Uuid,
+        filename: String,
+        source_key: String,
+        profile: Value,
+    ) -> Self {
         Self {
+            document_id,
             filename,
             source_key,
             status: "pending".into(),
