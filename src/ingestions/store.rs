@@ -142,7 +142,7 @@ impl Store {
         make_report: impl Fn(uuid::Uuid, String) -> FileReport,
     ) -> Result<AcceptedBatch> {
         self.check()?;
-        let id = uuid::Uuid::new_v4().to_string();
+        let id = uuid::Uuid::now_v7().to_string();
         let timestamp = now();
         let mut tx = self.pool.begin().await?;
         sqlx::query("INSERT INTO batches(id,created_at,finished_at) VALUES(?,?,?)")
@@ -160,7 +160,7 @@ impl Store {
                 "El informe no corresponde al documento registrado"
             );
             sqlx::query("INSERT INTO jobs(id,batch_id,document_id,ordinal,source_key,status,report,available_at,created_at,updated_at) VALUES(?,?,?,?,?,'pending',?,?,?,?)")
-                .bind(uuid::Uuid::new_v4().to_string()).bind(&id).bind(document_id.to_string()).bind(ordinal as i64).bind(&key)
+                .bind(uuid::Uuid::now_v7().to_string()).bind(&id).bind(document_id.to_string()).bind(ordinal as i64).bind(&key)
                 .bind(serde_json::to_string(&report)?).bind(timestamp).bind(timestamp).bind(timestamp).execute(&mut *tx).await?;
         }
         tx.commit().await?;

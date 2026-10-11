@@ -108,7 +108,7 @@ curl --fail-with-body 'http://127.0.0.1:3000/ingestions/<uuid>?limit=100&offset=
 
 La consulta devuelve `batch_id`, `status`, `counts`, `created_at`, `finished_at`, `limit`, `offset` y `documents`. El límite predeterminado es 100 y el máximo 500; un lote inexistente devuelve 404. Los contadores abarcan todo el lote, independientemente de la página. `status=completed` indica que todos los trabajos terminaron, incluidos los rechazados o fallidos; una selección vacía termina inmediatamente.
 
-Cada documento incluye `job_id`, `document_id`, `source_key`, `filename`, `status`, `stage`, `result`, `attempts`, fechas, `original_sha256`, `task_ids`, `chunks`, `profile`, `warnings` y `error`. Las fechas son milisegundos UTC desde Unix epoch; `next_attempt_at` indica cuándo vuelve a estar disponible un pendiente. Distintos trabajos para el mismo documento conservan su `document_id`.
+Cada documento incluye `job_id`, `document_id`, `source_key`, `filename`, `status`, `stage`, `result`, `attempts`, fechas, `original_sha256`, `task_ids`, `chunks`, `profile`, `warnings` y `error`. Las fechas son milisegundos UTC desde Unix epoch; `next_attempt_at` indica cuándo vuelve a estar disponible un pendiente. Los lotes y trabajos reciben UUIDv7, representados como cadenas con guiones. Cada trabajo conserva su ID durante sus reintentos; distintos trabajos para el mismo documento conservan su `document_id`.
 
 | Estado del documento | Significado |
 |---|---|
@@ -127,11 +127,15 @@ El catálogo `documents` de SQLite asigna un **UUIDv7** al registrar por primera
 
 | Campo | Función |
 |---|---|
-| `document_id` | Identidad persistente del documento, independiente de la ubicación y del contenido |
+| `document_id` | UUIDv7 persistente del documento, independiente de la ubicación y del contenido |
+| `batch_id` | UUIDv7 que identifica un lote de ingesta |
+| `job_id` | UUIDv7 que identifica un trabajo dentro de un lote |
 | `source_key` | Localizador relativo a `DOCUMENTS_ROOT`, por ejemplo `impresoras/manual.pdf` |
 | `filename` | Nombre visible, guardado como metadato separado; la selección local lo obtiene del nombre del archivo |
 | `original_sha256` | Huella de los bytes procesados, guardada en los informes y la procedencia del índice |
 | ID del punto Qdrant | UUIDv5 determinista de `document_id` y la posición del fragmento |
+
+Las solicitudes HTTP, las consultas y el `corpus_id` interno de la colección usan UUIDv4. El nombre interno de cada colección y el directorio temporal asociado a cada base SQLite usan UUIDv5 para poder recalcularlos. El orden de ejecución de la cola sigue determinado por `jobs.sequence`, su clave entera, y la disponibilidad de cada trabajo.
 
 Los originales permanecen en su ubicación actual: esta API selecciona rutas locales y no implementa todavía cargas de archivos, almacenamiento S3 ni operaciones de renombrado. Para seleccionar y consultar se sigue usando el mismo flujo HTTP.
 
@@ -146,7 +150,7 @@ Los originales permanecen en su ubicación actual: esta API selecciona rutas loc
 
 No se deduplican documentos ni se infieren movimientos a partir de su hash. Los ausentes en una selección permanecen registrados e indexados. Una base SQLite corresponde a una raíz documental lógica: cambiarla por otro conjunto de archivos con las mismas rutas se interpreta como actualizar esos documentos.
 
-Qdrant agrupa y verifica los puntos por `document_id` y mantiene índices de payload para `document_id` y `source_key`. Si una ruta ya está indexada con un ID distinto del proporcionado por el catálogo, la ingesta falla antes de escribir en Qdrant. En ese caso hay que restaurar el catálogo correspondiente o reconstruir el índice desde el catálogo actual.
+Qdrant agrupa y verifica los puntos por `document_id`. Al ingerir en una colección nueva, crea un índice de payload de tipo `uuid` para `document_id` y otro de tipo `keyword` para `source_key`; los filtros utilizan coincidencia exacta. El índice `uuid` almacena los UUID analizados en una representación de 16 bytes. Si una ruta ya está indexada con un ID distinto del proporcionado por el catálogo, la ingesta falla antes de escribir en Qdrant. En ese caso hay que restaurar el catálogo correspondiente o reconstruir el índice desde el catálogo actual.
 
 Las fuentes de `POST /query` incluyen `document_id`. El campo `id` sigue siendo el marcador local de la cita (`"1"`, `"2"`, etc.); varios fragmentos citados pueden pertenecer al mismo documento. El límite de tres fragmentos de contexto por documento se aplica al UUID.
 

@@ -263,11 +263,14 @@ pub(crate) async fn publish_alias(client: &Qdrant, alias: &str, collection: &str
 
 /// Index identity lookups and locator conflict checks.
 pub(crate) async fn ensure_document_indexes(client: &Qdrant, collection: &str) -> Result<()> {
-    for field in ["document_id", "source_key"] {
+    for (field, field_type) in [
+        ("document_id", FieldType::Uuid),
+        ("source_key", FieldType::Keyword),
+    ] {
         confirm_update(
             client
                 .create_field_index(
-                    CreateFieldIndexCollectionBuilder::new(collection, field, FieldType::Keyword)
+                    CreateFieldIndexCollectionBuilder::new(collection, field, field_type)
                         .wait(true),
                 )
                 .await?,

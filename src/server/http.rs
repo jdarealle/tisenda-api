@@ -302,7 +302,7 @@ async fn ingest_batch(
 /// Los contadores abarcan todo el lote; completed indica que todos sus trabajos son terminales.
 #[utoipa::path(
     get, path = "/ingestions/{batch_id}", tag = "Ingesta",
-    params(("batch_id" = String, Path, description = "Identificador del lote"), Pagination),
+    params(("batch_id" = String, Path, description = "UUIDv7 del lote"), Pagination),
     responses(
         (status = 200, description = "Progreso y página de documentos", body = BatchResult),
         (status = 400, description = "Paginación inválida", body = ErrorResponse),

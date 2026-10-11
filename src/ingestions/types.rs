@@ -12,6 +12,7 @@ pub(crate) struct Selection {
 
 #[derive(Serialize, ToSchema)]
 pub(crate) struct AcceptedBatch {
+    /// UUIDv7 del lote, representado como cadena con guiones.
     pub(crate) batch_id: String,
     pub(crate) total: usize,
     pub(crate) status_url: String,
@@ -30,6 +31,7 @@ pub(super) struct Counts {
 
 #[derive(Serialize, ToSchema)]
 pub(crate) struct BatchResult {
+    /// UUIDv7 del lote, representado como cadena con guiones.
     pub(super) batch_id: String,
     /// pending, processing o completed; revisar counts para conocer los fallos.
     pub(super) status: String,
@@ -44,6 +46,7 @@ pub(crate) struct BatchResult {
 
 #[derive(Serialize, ToSchema)]
 pub(super) struct JobReport {
+    /// UUIDv7 del trabajo; se conserva durante sus reintentos.
     pub(super) job_id: String,
     pub(super) attempts: i64,
     pub(super) created_at: i64,
