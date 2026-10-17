@@ -1,217 +1,122 @@
 # Tisenda API
 
-El proyecto está orientado a resolver rápidamente las preguntas que los distintos departamentos dirigen al área de IT, utilizando la documentación interna como fuente. Por ejemplo, permite consultar qué consumible necesita una impresora y cómo sustituirlo, para facilitar la atención de dudas frecuentes.
+API HTTP y biblioteca Rust de generación aumentada por recuperación (RAG) para responder consultas dirigidas al área de IT a partir de documentos locales, con referencias a los originales.
 
-API HTTP y biblioteca Rust para consultar documentos mediante generación aumentada por recuperación (RAG). Procesa archivos de una carpeta local, crea un índice vectorial y responde preguntas con referencias a los originales.
+La API y su worker se ejecutan en el host. [Compose](compose.yaml) levanta Docling Serve para convertir documentos, TEI para generar embeddings y Qdrant para indexarlos. SQLite conserva el catálogo y la cola; OpenAI genera respuestas con los fragmentos recuperados.
 
-Admite PDF, documentos de Office OOXML, HTML, Markdown, texto, CSV, AsciiDoc, imágenes y subtítulos VTT. El catálogo de extensiones está definido en [src/docling/formats.rs](src/docling/formats.rs).
+## Funcionalidad
 
-## Cómo funciona
+- Ingesta asíncrona de originales seleccionados por ruta dentro de la raíz documental del servidor, con seguimiento del lote, reintentos y detección de documentos sin cambios.
+- Formatos admitidos: PDF, Office OOXML, HTML, Markdown, texto, CSV, AsciiDoc, imágenes y VTT. La lista de extensiones está en [formats.rs](src/docling/formats.rs).
+- Consultas en español con citas a los documentos originales.
+- Contrato HTTP generado desde Rust y publicado con OpenAPI y Scalar.
 
-- **Docling Serve** convierte los documentos y genera fragmentos de texto, con OCR configurable.
-- **Text Embeddings Inference (TEI)** valida los tokens y genera embeddings.
-- **Qdrant** almacena los fragmentos, sus vectores y su procedencia.
-- **SQLite** conserva las identidades documentales, la cola de ingesta y su historial.
-- **OpenAI** genera respuestas a partir de los fragmentos recuperados.
+Limitaciones:
 
-```mermaid
-flowchart LR
-    Originales[Carpeta de documentos] -->|Ingesta|API[API Rust / Axum]
-    API <-->|Conversión y fragmentación|Docling[Docling Serve]
-    API <-->|Tokens y embeddings|TEI
-    API <-->|Indexación y búsqueda|Qdrant
-    Cliente <-->|Preguntas y respuestas con fuentes|API
-    API <-->|Generación de respuestas|OpenAI
-```
+- No recibe archivos desde el navegador: los originales deben estar en la raíz documental del servidor.
+- No tiene autenticación ni TLS. Quien alcance la API puede ingerir documentos y consultar su contenido.
+- Funciona como una sola instancia con almacenamiento local.
 
-La API y su worker integrado se ejecutan en el host. [compose.yaml](compose.yaml) levanta Docling Serve, TEI y Qdrant; Qdrant y la caché del modelo TEI usan volúmenes persistentes de Podman. SQLite guarda el catálogo documental, la cola y el historial en `INGESTIONS_DB_PATH`, cuyo valor predeterminado es `data/ingestions.sqlite`.
+## Requisitos
 
-## Puesta en marcha
+- Rust 1.95 o superior (`rust-version` en [Cargo.toml](Cargo.toml)).
+- Podman con Compose para Docling Serve, TEI y Qdrant. Las imágenes y versiones están en [compose.yaml](compose.yaml); las variables que exige figuran como `[obligatoria: Compose]` en [.env.example](.env.example).
+- CDI NVIDIA en el host: el contenedor Docling lo solicita incluso con `DOCLING_DEVICE=cpu`.
+- Una clave de API de OpenAI para generar respuestas con evidencia; la ingesta y las consultas sin evidencia no la usan.
+
+Las versiones exactas de las dependencias Rust están en [Cargo.toml](Cargo.toml) y [Cargo.lock](Cargo.lock).
+
+## Inicio rápido
 
 Ejecuta los comandos desde la raíz del repositorio.
 
-### 1. Preparar la configuración y los documentos
+1. Copia la configuración de ejemplo si aún no tienes una local, configura `OPENAI_API_KEY` y crea la carpeta de originales. [.env.example](.env.example) usa `corpus`:
 
-Si aún no tienes una configuración local, copia la plantilla:
+   ```bash
+   cp .env.example .env
+   mkdir -p corpus
+   ```
 
-```bash
-cp .env.example .env
-```
+2. Levanta los servicios y espera a que carguen sus modelos:
 
-Edita `.env` para establecer `OPENAI_API_KEY` y revisar `DOCUMENTS_ROOT`. La plantilla utiliza `corpus`; crea esa carpeta y coloca allí los documentos que quieras indexar:
+   ```bash
+   podman compose up -d
+   podman compose logs -f docling tei
+   ```
 
-```bash
-mkdir -p corpus
-```
+3. Inicia la API. Crea la base SQLite y sus directorios al arrancar:
 
-Si eliges otra ruta, asegúrate de que exista y sea legible. Las rutas relativas se resuelven desde el directorio de ejecución.
+   ```bash
+   cargo run --locked
+   ```
 
-[.env.example](.env.example) documenta las variables de conexión, modelos, OCR y límites de procesamiento. El modelo, la revisión y la dimensión de embeddings deben ser compatibles con TEI y con el índice. La API carga `.env` al iniciar y da prioridad a las variables ya definidas en el proceso; los cambios requieren reiniciar el componente correspondiente.
+4. Comprueba que responden la API y los servicios:
 
-### 2. Levantar los servicios
+   ```bash
+   curl --fail-with-body http://127.0.0.1:3000/health
+   curl --fail-with-body http://127.0.0.1:6333/healthz
+   curl --fail-with-body http://127.0.0.1:5001/ready
+   ```
 
-```bash
-podman compose up -d
-podman compose logs -f docling tei
-```
+## Configuración
 
-Espera a que los servicios terminen de cargar sus modelos. Puedes comprobar la disponibilidad de Docling con:
+Las variables, su obligatoriedad y sus valores por defecto están documentados en [.env.example](.env.example). Los cambios requieren reiniciar el componente afectado.
 
-```bash
-curl --fail-with-body http://127.0.0.1:5001/ready
-```
+- Cambiar el modelo, su revisión, el presupuesto de fragmentación o las opciones de OCR e imágenes obliga a reprocesar los documentos al volver a ingerirlos.
+- `EMBEDDING_MODEL`, `EMBEDDING_REVISION` y `EMBEDDING_DIMENSION` deben coincidir entre la API, TEI y el índice.
+- `CHUNK_MAX_TOKENS` está obsoleto; usa `CHUNK_TARGET_TOKENS`.
+- El cuerpo JSON de las solicitudes HTTP admite hasta 256 KiB y no es configurable.
 
-### 3. Iniciar la API
+## Uso básico
 
-```bash
-cargo run --locked
-```
-
-La API crea la base SQLite y sus directorios al iniciar. Una segunda instancia que use la misma base no podrá adquirir su bloqueo exclusivo.
-
-Abre [Scalar](http://127.0.0.1:3000/docs), ejecuta una ingesta de los documentos y después realiza una consulta. Es necesario indexar documentos antes de poder consultar sus contenidos.
-
-## Documentación de la API
-
-Scalar reúne los endpoints, los esquemas de entrada y salida, los ejemplos y los estados HTTP. Desde allí también puedes ejecutar solicitudes. La especificación OpenAPI se genera desde los handlers y tipos Rust con `utoipa`.
-
-Estas direcciones corresponden a la configuración local de la plantilla:
+1. Abre [Scalar](http://127.0.0.1:3000/docs) y ejecuta `POST /ingestions` con `{}` para seleccionar toda la raíz documental.
+2. Consulta `GET /ingestions/{batch_id}` hasta que el lote figure como `completed` y revisa los contadores de fallos.
+3. Usa `POST /query` con `{"question": "..."}` para preguntar sobre los documentos indexados.
 
 | Recurso | Dirección |
-|---|---|
-| Referencia interactiva de la API | [Scalar](http://127.0.0.1:3000/docs) |
-| Especificación para herramientas y clientes | [OpenAPI](http://127.0.0.1:3000/openapi.json) |
+| --- | --- |
+| Endpoints, esquemas y ejemplos interactivos | [Scalar](http://127.0.0.1:3000/docs) |
+| Especificación generada desde Rust | [OpenAPI](http://127.0.0.1:3000/openapi.json) |
 | Interfaz de conversión | [Docling](http://127.0.0.1:5001/ui) |
-| Explorador del índice vectorial | [Qdrant](http://127.0.0.1:6333/dashboard) |
+| Explorador del índice | [Qdrant](http://127.0.0.1:6333/dashboard) |
 
-Scalar necesita acceso desde el navegador a `cdn.jsdelivr.net` para cargar su JavaScript.
+### Diagnóstico
 
-## Ingesta asíncrona
+La API escribe logs a stdout: texto con `rag=debug` en compilaciones de depuración y JSON con `rag=info` en release. `RUST_LOG` cambia el filtro, no el formato. Los eventos se correlacionan con `x-request-id`, `query_id`, `job_id` y `document_id`. TEI usa gRPC en el puerto 8080: revisa sus logs y los errores de `Info`, `Tokenize` y `Embed`.
 
-```bash
-curl --fail-with-body -i http://127.0.0.1:3000/ingestions \
-  -H 'Content-Type: application/json' \
-  -d '{"paths":["manual.pdf","catalogos"]}'
-```
+| Síntoma | Comprobación |
+| --- | --- |
+| HTTP 503 `index_unavailable` | Completar una primera ingesta y comprobar el alias |
+| Lote `completed` con documentos fallidos | Revisar los contadores y la etapa y el error de cada documento |
+| La API se cierra con el evento `ingestion_worker_stopped` (o responde `503 worker_stopped`) | Error de persistencia SQLite o pánico del worker: comprobar espacio, permisos y propiedad exclusiva de SQLite y reiniciar; los trabajos interrumpidos se recuperan |
+| La API no arranca: «Otra instancia posee esta cola de ingesta» | Detener la instancia propietaria; no eliminar el archivo `.lock` |
+| La API no arranca: esquema SQLite anterior | Seguir la [reinicialización](#reinicialización-y-reconstrucción-del-índice) |
+| HTTP 502 `answer_failed` o documentos `failed` por modelo, revisión o esquema incompatible | Revisar la configuración de embeddings y [reconstruir el índice](#reinicialización-y-reconstrucción-del-índice) |
+| HTTP 502 `answer_failed` con evidencia | Comprobar `OPENAI_API_KEY` y la disponibilidad de TEI y OpenAI |
+| HTTP 502 `invalid_citations` | Revisar el evento de validación de citas; el índice existe |
 
-En una sola transacción SQLite se registra o recupera la identidad de cada documento y se crean el lote y sus trabajos. Después de confirmar esa transacción, devuelve `202 Accepted`, una cabecera `Location: /ingestions/{batch_id}` y este cuerpo:
+### Reinicialización y reconstrucción del índice
 
-```json
-{"batch_id":"<uuid>","total":12,"status_url":"/ingestions/<uuid>"}
-```
+Originales y SQLite son los datos esenciales: Qdrant se puede reconstruir desde ellos conservando los identificadores documentales. No borres SQLite para reconstruir el índice.
 
-`{}` o `{"paths":[]}` selecciona toda la raíz. La lista se resuelve, ordena y deduplica al aceptar el lote. Los archivos añadidos después requieren otra solicitud. El contenido de cada archivo se lee cuando llega su turno, también en los reintentos.
-
-```bash
-curl --fail-with-body 'http://127.0.0.1:3000/ingestions/<uuid>?limit=100&offset=0'
-```
-
-La consulta devuelve `batch_id`, `status`, `counts`, `created_at`, `finished_at`, `limit`, `offset` y `documents`. El límite predeterminado es 100 y el máximo 500; un lote inexistente devuelve 404. Los contadores abarcan todo el lote, independientemente de la página. `status=completed` indica que todos los trabajos terminaron, incluidos los rechazados o fallidos; una selección vacía termina inmediatamente.
-
-Cada documento incluye `job_id`, `document_id`, `source_key`, `filename`, `status`, `stage`, `result`, `attempts`, fechas, `original_sha256`, `task_ids`, `chunks`, `profile`, `warnings` y `error`. Las fechas son milisegundos UTC desde Unix epoch; `next_attempt_at` indica cuándo vuelve a estar disponible un pendiente. Los lotes y trabajos reciben UUIDv7, representados como cadenas con guiones. Cada trabajo conserva su ID durante sus reintentos; distintos trabajos para el mismo documento conservan su `document_id`.
-
-| Estado del documento | Significado |
-|---|---|
-| `pending` | En cola o esperando un reintento |
-| `processing` | En ejecución |
-| `completed` | Éxito |
-| `completed_with_warnings` | Éxito con advertencias |
-| `rejected` | Entrada no admitida |
-| `failed` | Fallo definitivo o intentos agotados |
-
-`result` es `indexed` o `unchanged` al terminar correctamente. Se persisten las etapas `validation`, `snapshot`, `check_index`, `conversion`, `download`, `tokens`, `rechunk`, `index` y `done`.
-
-## Identidad y almacenamiento de documentos
-
-El catálogo `documents` de SQLite asigna un **UUIDv7** al registrar por primera vez una `source_key`. Guarda `id`, `source_key` única, `filename` y `created_at`. Los trabajos referencian ese registro mediante una clave foránea; los informes y todos los intentos conservan el mismo ID, incluso si el archivo acaba rechazado o falla su procesamiento. Registrar y encolar no requiere que Qdrant esté disponible.
-
-| Campo | Función |
-|---|---|
-| `document_id` | UUIDv7 persistente del documento, independiente de la ubicación y del contenido |
-| `batch_id` | UUIDv7 que identifica un lote de ingesta |
-| `job_id` | UUIDv7 que identifica un trabajo dentro de un lote |
-| `source_key` | Localizador relativo a `DOCUMENTS_ROOT`, por ejemplo `impresoras/manual.pdf` |
-| `filename` | Nombre visible, guardado como metadato separado; la selección local lo obtiene del nombre del archivo |
-| `original_sha256` | Huella de los bytes procesados, guardada en los informes y la procedencia del índice |
-| ID del punto Qdrant | UUIDv5 determinista de `document_id` y la posición del fragmento |
-
-Las solicitudes HTTP, las consultas y el `corpus_id` interno de la colección usan UUIDv4. El nombre interno de cada colección y el directorio temporal asociado a cada base SQLite usan UUIDv5 para poder recalcularlos. El orden de ejecución de la cola sigue determinado por `jobs.sequence`, su clave entera, y la disponibilidad de cada trabajo.
-
-Los originales permanecen en su ubicación actual: esta API selecciona rutas locales y no implementa todavía cargas de archivos, almacenamiento S3 ni operaciones de renombrado. Para seleccionar y consultar se sigue usando el mismo flujo HTTP.
-
-| Operación | Resultado al volver a ingerir |
-|---|---|
-| Repetir una selección, reintentar o reiniciar la API | Mismo `document_id` |
-| Cambiar los bytes en la misma `source_key` | Mismo ID; se actualizan sus fragmentos |
-| Mover o renombrar la carpeta raíz y actualizar `DOCUMENTS_ROOT`, conservando las rutas relativas y SQLite | Mismos IDs |
-| Reconstruir Qdrant conservando SQLite y las rutas relativas | Mismos IDs de documentos y fragmentos para las mismas posiciones |
-| Copiar los mismos bytes a otra `source_key` | Otro documento con otro ID |
-| Renombrar manualmente un archivo o una subcarpeta dentro de la raíz | La nueva ruta registra otro documento; el anterior permanece en el catálogo y el índice |
-
-No se deduplican documentos ni se infieren movimientos a partir de su hash. Los ausentes en una selección permanecen registrados e indexados. Una base SQLite corresponde a una raíz documental lógica: cambiarla por otro conjunto de archivos con las mismas rutas se interpreta como actualizar esos documentos.
-
-Qdrant agrupa y verifica los puntos por `document_id`. Al ingerir en una colección nueva, crea un índice de payload de tipo `uuid` para `document_id` y otro de tipo `keyword` para `source_key`; los filtros utilizan coincidencia exacta. El índice `uuid` almacena los UUID analizados en una representación de 16 bytes. Si una ruta ya está indexada con un ID distinto del proporcionado por el catálogo, la ingesta falla antes de escribir en Qdrant. En ese caso hay que restaurar el catálogo correspondiente o reconstruir el índice desde el catálogo actual.
-
-Las fuentes de `POST /query` incluyen `document_id`. El campo `id` sigue siendo el marcador local de la cita (`"1"`, `"2"`, etc.); varios fragmentos citados pueden pertenecer al mismo documento. El límite de tres fragmentos de contexto por documento se aplica al UUID.
-
-### Conservación del catálogo y transición del prototipo
-
-**Los originales y SQLite son datos persistentes esenciales.** Conserva ambos y respáldalos juntos. Para copiar SQLite con archivos del sistema, detén primero la API y conserva la base y cualquier archivo WAL/SHM asociado; para respaldos en ejecución utiliza el mecanismo de backup de SQLite. Borrar el catálogo pierde las identidades aunque se conserven los originales. Reconstruir Qdrant no requiere borrar SQLite.
-
-Esta versión introduce el catálogo en la migración inicial y usa el esquema **4** de Qdrant. La SQLite del prototipo anterior y los índices con esquemas 2 o 3 se rechazan; no hay migración de IDs ni borrado automático. Para adoptar esta versión por primera vez:
+**SQLite con un esquema anterior al catálogo actual.** La API no arranca y no migra ni borra datos automáticamente:
 
 1. Detén la API y respalda los originales y el estado anterior.
-2. Conserva `DOCUMENTS_ROOT`. Configura una **nueva** `INGESTIONS_DB_PATH` y un **nuevo** `QDRANT_ALIAS` que no estén en uso, por ejemplo `data/catalog-v1.sqlite` y `rag_catalog_v1`. Así puedes conservar el estado anterior separado sin borrar colecciones compartidas.
-3. Inicia la API y envía `POST /ingestions` con `{}` para registrar e indexar todos los originales. Consulta el lote hasta su finalización y revisa sus fallos.
+2. Conserva `DOCUMENTS_ROOT`. Configura un `INGESTIONS_DB_PATH` nuevo y un `QDRANT_ALIAS` nuevo y vacío, por ejemplo `data/catalog-v1.sqlite` y `rag_catalog_v1`.
+3. Inicia la API, envía `POST /ingestions` con `{}` y sigue el lote hasta que termine, revisando sus fallos.
 
-Este cambio inicial genera nuevos IDs e historial. En reconstrucciones posteriores conserva el catálogo ya creado: puedes elegir otro alias vacío y volver a ingerir usando la **misma SQLite**. El catálogo reutilizará los IDs.
+Esta transición crea identificadores e historial nuevos; el estado anterior queda intacto en su ubicación.
 
-## Consideraciones de operación
+**Índice Qdrant incompatible o perdido** (esquema distinto de **4**, otro modelo o revisión, colección eliminada):
 
-- **Cola:** una instancia de API y un worker procesan un documento a la vez. La API acepta nuevos lotes durante el procesamiento sin exigir que los servicios externos estén disponibles. SQLite conserva lotes, trabajos e intentos sin purga automática.
-- **Persistencia:** SQLite usa dos conexiones, claves foráneas, WAL, `synchronous=FULL`, espera de bloqueo de cinco segundos y migraciones incluidas en el binario. Reiniciar la API con la misma `INGESTIONS_DB_PATH` conserva las identidades, la cola y el historial. SQLite, su WAL y su bloqueo deben permanecer juntos en almacenamiento local. SQLx 0.9.0 incorpora SQLite 3.51.3, fijado en `Cargo.lock`; no requiere instalar un motor externo.
-- **Temporales:** `INGESTIONS_DB_PATH` e `INGESTIONS_TEMP_ROOT` son independientes. Se crea un directorio por intento, se copia el original en bloques de 64 KiB calculando SHA-256 y se elimina el temporal al terminar, fallar o cancelar. Al iniciar se limpian únicamente los directorios propios huérfanos, después de adquirir el bloqueo. El ZIP y los resultados JSON mantienen sus límites en memoria.
-- **Sin cambios:** antes de Docling se consulta Qdrant por `document_id` y `source_key`, sin vectores. Solo se omite el procesamiento cuando hash original, perfil, pipeline, modelo, IDs y posiciones de todos los chunks son coherentes. Un índice incompleto obliga a procesar; un esquema antiguo, un conflicto de identidad o una consulta fallida producen un error. El hash original detecta cambios y no determina la identidad.
-- **Reintentos:** hasta tres intentos para errores de transporte, HTTP 408/429/5xx y estados gRPC transitorios; esperas de 10 y 60 segundos que permiten avanzar a otros trabajos. Errores de entrada o configuración son terminales. Cada intento conserva su informe y tareas Docling en SQLite.
-- **Recuperación:** los trabajos interrumpidos se reconcilian con Qdrant antes de reconvertir o agotar sus intentos. Si esa consulta falla transitoriamente, se vuelve a consultar diez segundos después sin iniciar otra conversión. Al apagar se dejan de tomar trabajos y se conceden 30 segundos al activo. Un error de persistencia detiene el worker y el servidor supervisado.
-- **Efectos externos:** puede haber repetición de operaciones tras un fallo; no se garantiza ejecución exactamente una vez. Un timeout local no cancela necesariamente la tarea remota de Docling. La actualización en Qdrant no es transaccional y puede dejar puntos parciales, que se detectan al reintentar.
-- **Conversión:** el OCR extrae texto de imágenes; no genera descripciones de fotografías. TEI valida el tamaño de los fragmentos sin truncarlos y, si es necesario, se solicita a Docling que vuelva a fragmentar. Un documento sin fragmentos utilizables no se indexa.
-- **Respuestas:** las citas remiten a fragmentos recuperados. La validación comprueba el formato y la existencia de las referencias, pero no garantiza que cada afirmación esté respaldada por ellas.
+1. Detén la API y conserva la misma SQLite y los originales.
+2. Configura un `QDRANT_ALIAS` nuevo y vacío, y la configuración de modelos adecuada en la API y en TEI.
+3. Inicia la API, envía `POST /ingestions` con `{}` y revisa los fallos del lote. Los documentos conservan su `document_id`.
+4. Comprueba una consulta representativa y que sus fuentes correspondan a los originales.
 
-## Logs
-
-La API escribe a stdout: texto compacto con nivel `rag=debug` en desarrollo y JSON por línea con `rag=info` en release. `RUST_LOG` permite ajustar el filtro:
-
-```bash
-RUST_LOG=rag=debug cargo run --locked --release
-```
-
-Cada solicitud recibe un `x-request-id` para correlacionarla con sus logs. Los logs propios omiten contenido documental, preguntas, respuestas y credenciales. La escritura usa una cola en memoria y puede descartar eventos si se llena; la recolección, rotación y retención corresponden al entorno de ejecución.
+Las consultas vuelven a estar disponibles tras el primer documento indexado, aunque falte procesar el resto del corpus.
 
 ## Desarrollo
-
-`ingest_documents` recibe documentos convertidos mediante `IngestDocument`. El llamador Rust debe asignar y persistir `document_id` antes de invocar esta API, y reutilizarlo en actualizaciones y reintentos. Esta función de bajo nivel no registra documentos en SQLite ni genera IDs. La API HTTP realiza ese registro al aceptar el lote.
-
-```rust
-use rag::{Config, DoclingChunk, IngestDocument, ingest_documents};
-use uuid::Uuid;
-
-async fn index_registered(config: &Config, saved_id: Uuid, chunks: Vec<DoclingChunk>) {
-    let results = ingest_documents(config, vec![IngestDocument {
-        document_id: saved_id,
-        source_key: "impresoras/manual.pdf".into(),
-        filename: "manual.pdf".into(),
-        chunks,
-    }]).await;
-    // Cada DocumentIngestResult incluye document_id y su resultado individual.
-    for result in results {
-        assert_eq!(result.document_id, saved_id);
-        result.result.expect("indexación");
-    }
-}
-```
-
-Para comprobar el formato, la compilación y el análisis estático:
 
 ```bash
 cargo fmt --all -- --check
@@ -219,14 +124,12 @@ cargo check --locked
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
-La implementación se organiza por responsabilidad:
+El proyecto aún no tiene pruebas automatizadas. La API pública de la biblioteca se expone en [src/lib.rs](src/lib.rs).
 
-| Módulo | Responsabilidad |
-|---|---|
-| `server` | Servidor HTTP, OpenAPI y Scalar |
-| `ingestions` | Catálogo de identidades, selección de originales, SQLite, recuperación y worker |
-| `docling` | Conversión, formatos y procedencia |
-| `ingest` | Preparación de fragmentos e indexación |
-| `answer` | Recuperación de contexto, generación y citas |
-| `tei`, `qdrant` | Clientes de embeddings y almacenamiento vectorial |
-| `config`, `logging` | Configuración y diagnóstico |
+## Documentación técnica
+
+| Documento | Contenido |
+| --- | --- |
+| [Arquitectura](docs/ARCHITECTURE.md) | Componentes, tecnología, flujos, datos, invariantes, decisiones y límites conocidos |
+| [Especificaciones](docs/specs/README.md) | Comportamiento esperado de la [ingesta](docs/specs/ingestion.md) y de las [consultas](docs/specs/query.md) |
+| [Migraciones](migrations/) | Esquema SQLite del catálogo y la cola |
